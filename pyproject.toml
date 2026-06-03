@@ -4,7 +4,7 @@
 # the JarvYZ-side auto-spawn (`-m yz_music.server`), editable installs all use it.
 name = "yz-music"
 version = "0.0.1"
-description = "Music satellite — YouTube downloader + mpv playback control. Standalone HTTP service with optional JarvYZ integration."
+description = "Play YouTube Video via mpv to set Audio/Video delay"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }

@@ -16,7 +16,7 @@
   <img src="ui/public/logo.svg" alt="JarvYZ" width="200">
 </p>
 
-> `yz-music` — YouTube downloader + mpv playback control. Standalone HTTP service with optional JarvYZ integration.
+> `yz-music` — Play YouTube Video via mpv to set Audio/Video delay
 
 ### Techs
 
