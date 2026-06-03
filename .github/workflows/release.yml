@@ -98,6 +98,11 @@ jobs:
             platform: linux
             lite_only: "1"
     runs-on: ${{ matrix.os }}
+    env:
+      # macOS signing is gated on this. Empty (no org secret) -> ship UNSIGNED;
+      # once the YZ-Tech org secrets are set, signing + notarization kick in
+      # automatically with no further workflow change.
+      HAS_MAC_SIGNING: ${{ secrets.MACOS_CERTIFICATE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,6 +114,45 @@ jobs:
         with:
           name: wheel
           path: wheel
+
+      # ── macOS code signing prep (bare PyInstaller binary) ──────────────────
+      # Pattern lifted from ledfx _pipeline/BuildSongDetector.yml. All guarded on
+      # HAS_MAC_SIGNING, so unset-secret builds simply skip and ship unsigned.
+      - name: Import macOS signing certificate
+        if: matrix.platform == 'macos' && env.HAS_MAC_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$MACOS_CERTIFICATE_BASE64" | base64 --decode -o "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+      - name: Set up Apple API key for notarization
+        if: matrix.platform == 'macos' && env.HAS_MAC_SIGNING == 'true'
+        env:
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$APP_STORE_CONNECT_API_PRIVATE_KEY" > ~/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8
+          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=$APP_STORE_CONNECT_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APP_STORE_CONNECT_ISSUER_ID" >> "$GITHUB_ENV"
+      - name: Detect signing identity
+        if: matrix.platform == 'macos' && env.HAS_MAC_SIGNING == 'true'
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | grep -o '[A-F0-9]\{40\}')
+          echo "Found signing identity: $IDENTITY"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
       - name: Build standalone binaries
         shell: bash
         run: |
@@ -129,11 +173,35 @@ jobs:
             linux)
               cp dist/yz-music-lite "out/yz-music_${V}_linux-lite" ;;
           esac
+      - name: Sign + notarize macOS binaries
+        if: matrix.platform == 'macos' && env.HAS_MAC_SIGNING == 'true'
+        run: |
+          shopt -s nullglob
+          for BIN in out/yz-music_*_macos out/yz-music_*_macos-lite; do
+            echo "── signing $BIN"
+            codesign --force --options runtime --timestamp \
+              --entitlements standalone/entitlements.mac.plist \
+              --sign "$CODESIGN_IDENTITY" "$BIN"
+            codesign --verify --strict --verbose=2 "$BIN"
+            ditto -c -k --keepParent "$BIN" "$BIN.zip"   # notarytool needs zip/dmg/pkg
+            xcrun notarytool submit "$BIN.zip" \
+              --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
+            # A bare exe can't carry a stapled ticket (expected) — the ticket lives
+            # on Apple's servers, so first launch needs a network check.
+            xcrun stapler staple "$BIN" || echo "stapling not supported for bare exe (expected)"
+            spctl -a -vvv -t install "$BIN" || echo "notarized (spctl may warn for bare exe)"
+            rm -f "$BIN.zip"
+          done
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
           path: out/**
+      - name: Clean up signing keychain
+        if: always() && matrix.platform == 'macos' && env.HAS_MAC_SIGNING == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+          rm -f ~/private_keys/*.p8 2>/dev/null || true
 
   # ---------------------------------------------------------------- release
   create-release:

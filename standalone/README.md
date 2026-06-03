@@ -61,6 +61,25 @@ a GitHub Release. It is inert in the JarvYZ monorepo and activates once this
 satellite is split into its own repo. Trigger: a push whose commit message
 starts with `Release ` (or manual dispatch). Version flows from `pyproject.toml`.
 
+**macOS signing + notarization** (pattern from ledfx `_pipeline/BuildSongDetector.yml`):
+the macOS leg codesigns both binaries with the `Developer ID Application` cert
+(hardened runtime + `entitlements.mac.plist`) and notarizes each via `notarytool`.
+It is **gated** — if the secrets are unset the mac binaries simply ship unsigned;
+once present, signing kicks in with no workflow change. Set these as **YZ-Tech
+org secrets** so every `yz-*` repo inherits them:
+
+| Secret | What |
+|---|---|
+| `MACOS_CERTIFICATE_BASE64` | base64 of the `Developer ID Application` `.p12` |
+| `MACOS_CERTIFICATE_PASSWORD` | that `.p12`'s password |
+| `KEYCHAIN_PASSWORD` | any throwaway pw for the temp CI keychain |
+| `APP_STORE_CONNECT_API_PRIVATE_KEY` | contents of the App Store Connect `AuthKey_*.p8` |
+| `APP_STORE_CONNECT_API_KEY_ID` | the key's ID |
+| `APP_STORE_CONNECT_ISSUER_ID` | the issuer UUID |
+
+Note: a bare executable can't carry a stapled ticket, so first launch needs a
+network check against Apple (the notarization ticket lives server-side).
+
 ## Run
 
 `<exe>` = either `yz-music.exe` (native window) or `yz-music-lite.exe` (browser).
