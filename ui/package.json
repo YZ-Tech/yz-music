@@ -1,0 +1,36 @@
+{
+  "name": "yz-music-ui",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Music satellite UI — shipped as react-dynamic-module IIFE for JarvYZ, also buildable as a standalone SPA served by the satellite at /.",
+  "scripts": {
+    "dev": "vite",
+    "build:lib": "vite build --mode lib",
+    "build:pages": "vite build --mode pages",
+    "install-to-frontend": "node scripts/install-to-frontend.mjs",
+    "ship": "npm run build:lib && npm run install-to-frontend",
+    "preview": "vite preview --port 5183",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^9.0.1",
+    "@mui/material": "^9.0.1",
+    "@mui/x-data-grid": "^9.0.0-alpha.5",
+    "immer": "^10.0.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.10"
+  }
+}

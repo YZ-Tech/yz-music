@@ -1,0 +1,174 @@
+name: Builder
+
+# Lives in the satellite's OWN .github/ so it travels with the git-subtree
+# split into the standalone yz-music repo. INERT inside the JarvYZ monorepo
+# (GitHub Actions only reads the repo-ROOT .github/) — it activates once this
+# folder is the root of the split repo.
+#
+# The split repo is a read-only mirror: commits arrive via `git subtree push`
+# from the monorepo and carry the monorepo commit messages. So the release
+# trigger is an ordinary push whose message starts with "Release " (plus manual
+# dispatch). Bump the version in pyproject.toml, commit "Release x.y.z", and the
+# subtree push fires this. Version flows pyproject.toml -> manifest.json ->
+# every artifact filename.
+#
+# Artifacts (all attached to one GitHub Release):
+#   yz-music_<v>_windows.exe       native window (WebView2)   |  matrix: windows
+#   yz-music_<v>_windows-lite.exe  system browser             |
+#   yz-music_<v>_macos             native window (WKWebView)  |  matrix: macos
+#   yz-music_<v>_macos-lite        system browser             |
+#   yz-music_<v>_linux-lite        system browser             |  matrix: linux (lite only)
+#   yz-music_<v>.iife.js           dynamic module for the JarvYZ frontend
+#   yz-music_<v>.manifest.json     module manifest (drop-in pair for the IIFE)
+#   yz_music-<v>-py3-none-any.whl  pip-installable wheel
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------- assets
+  # Platform-independent outputs: the dynamic-module IIFE + the wheel. The
+  # wheel is also handed to the desktop matrix (built once, frozen per-OS).
+  build-assets:
+    name: Assets (IIFE + wheel)
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: astral-sh/setup-uv@v5
+      - name: Read version from pyproject.toml
+        id: ver
+        run: echo "VERSION=$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+      - name: Sync manifest.json to that version
+        run: |
+          node -e "const fs=require('fs');const p='manifest.json';const m=JSON.parse(fs.readFileSync(p));m.version='${{ steps.ver.outputs.VERSION }}';fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
+      - name: npm ci
+        working-directory: ui
+        run: npm ci
+      - name: Build dynamic module (IIFE) + standalone SPA
+        working-directory: ui
+        run: |
+          npm run build:lib     # -> ui/dist-lib/yz-music.iife.js
+          npm run build:pages   # -> yz_music/static/  (bundled into the wheel)
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist-wheel
+      - name: Stage release assets
+        run: |
+          V="${{ steps.ver.outputs.VERSION }}"
+          mkdir -p out
+          cp ui/dist-lib/yz-music.iife.js "out/yz-music_${V}.iife.js"
+          cp manifest.json                "out/yz-music_${V}.manifest.json"
+      - name: Upload release assets (IIFE + manifest)
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets
+          path: out/**
+      - name: Upload wheel (release + matrix input)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist-wheel/yz_music-*.whl
+
+  # ---------------------------------------------------------------- desktop
+  # PyInstaller freezes the host interpreter, so the binaries are built ON each
+  # OS. build.py produces lite everywhere + windowed on Windows/macOS.
+  build-desktop:
+    name: Standalone (${{ matrix.platform }})
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
+    needs: build-assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+          - os: ubuntu-22.04
+            platform: linux
+            lite_only: "1"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: wheel
+      - name: Build standalone binaries
+        shell: bash
+        run: |
+          WHEEL=$(ls wheel/yz_music-*.whl | head -1)
+          python standalone/build.py --wheel "$WHEEL" ${{ matrix.lite_only == '1' && '--lite-only' || '' }}
+      - name: Rename artifacts (version + platform)
+        shell: bash
+        run: |
+          V="${{ needs.build-assets.outputs.version }}"
+          mkdir -p out
+          case "${{ matrix.platform }}" in
+            windows)
+              cp dist/yz-music-lite.exe "out/yz-music_${V}_windows-lite.exe"
+              cp dist/yz-music.exe      "out/yz-music_${V}_windows.exe" ;;
+            macos)
+              cp dist/yz-music-lite "out/yz-music_${V}_macos-lite"
+              cp dist/yz-music      "out/yz-music_${V}_macos" ;;
+            linux)
+              cp dist/yz-music-lite "out/yz-music_${V}_linux-lite" ;;
+          esac
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: out/**
+
+  # ---------------------------------------------------------------- release
+  create-release:
+    name: Create Release
+    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release '))
+    needs: [build-assets, build-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read version from pyproject.toml
+        id: ver
+        run: echo "VERSION=$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Generate changelog
+        run: |
+          V="${{ steps.ver.outputs.VERSION }}"
+          echo "## yz-music v${V}" > changelog.md
+          echo "" >> changelog.md
+          PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            git log --pretty=format:"- %s (%h)" "${PREV}..HEAD" >> changelog.md
+          else
+            git log --pretty=format:"- %s (%h)" -n 20 >> changelog.md
+          fi
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.VERSION }}
+          name: yz-music v${{ steps.ver.outputs.VERSION }}
+          body_path: changelog.md
+          files: artifacts/**/*

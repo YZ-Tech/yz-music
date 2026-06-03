@@ -1,0 +1,79 @@
+{
+  "id": "music",
+  "name": "Music",
+  "version": "0.0.1",
+  "enabled": true,
+  "nav": {
+    "label": "Music",
+    "icon": "library_music",
+    "to": "/music"
+  },
+  "dashboards": [],
+  "exports": [
+    { "id": "MusicPage", "type": "component" }
+  ],
+  "settings": {},
+  "service": {
+    "url": "http://127.0.0.1:9002",
+    "settingPath": "media.satellite_url"
+  },
+  "tools": [
+    {
+      "name": "play_song",
+      "endpoint": "/tools/play_song",
+      "section": "music",
+      "speakable": true,
+      "description": "Play / queue / play-next a song. Local-first: looks for a unique match in the local library and plays from disk (no download); falls through to a fresh YouTube search when zero or multiple library files match the query. Pass force_youtube=true to bypass the library and always do a fresh YouTube search (use when the user explicitly asks for the original / a different version / something other than what they already have). Trigger phrases: 'play <song>' / 'spiel <song>' / 'queue <song>' / '<song> als nächstes' / 'play <song> from youtube' / 'spiel mir <song> von youtube'. Returns 'Playing X.' / 'Up next: X.' / 'Queued: X.' — speakable.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Free-form search query. Artist + title gives the best match (e.g. 'ginuwine pony', 'mgk smoke and drive')."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["play", "next", "queue"],
+            "default": "play",
+            "description": "play = replace mpv playlist and start now; next = insert right after the current track; queue = append to the end of the playlist."
+          },
+          "force_youtube": {
+            "type": "boolean",
+            "default": false,
+            "description": "Skip the local-library lookup and go straight to a fresh YouTube search. Use when the user says 'from youtube' / 'the original' / 'a different version' / 'fresh'."
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "mpv_control",
+      "endpoint": "/tools/mpv_control",
+      "section": "music",
+      "speakable": true,
+      "description": "Control the local mpv player (the one play_song uses). Prefer this over media_control when the user just played a song via play_song — mpv-specific, more precise than Windows media keys. Returns 'No music playing.' if mpv isn't running (LLM can then fall back to media_control for system-wide control). Triggers: 'pause' / 'pausiere' / 'weiter' / 'resume' / 'skip' / 'next song' / 'previous' / 'stop' / 'lauter' / 'leiser' / 'mute' / 'spring vor 30 sekunden' / 'seek back 10' / 'loop this' / 'loop all' / 'stop looping' / 'shuffle' / 'unshuffle' / 'audio delay 400' / 'lipsync delay <ms>' / 'delay aus'.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause", "play", "resume", "next", "prev",
+              "stop", "mute",
+              "vol_up", "vol_down", "vol_set", "seek",
+              "loop_one", "loop_all", "loop_off",
+              "shuffle", "unshuffle",
+              "audio_delay"
+            ],
+            "description": "pause = toggle pause; play/resume = unpause; next/prev = playlist navigation; stop = stop playback; mute = toggle mute; vol_up/vol_down = step volume (value = points, default 5); vol_set = set absolute (value 0-130); seek = relative seconds (negative = back); loop_one = repeat current track; loop_all = repeat playlist; loop_off = disable looping; shuffle = randomize remaining playlist (one-shot); unshuffle = restore original order (only if playlist unchanged since shuffle); audio_delay = lipsync compensation, value = ms POSITIVE (e.g. 400 = compensate for 400ms downstream speaker delay; 0 = clear). Persisted to satellite settings AND live-applied via IPC."
+          },
+          "value": {
+            "type": "integer",
+            "description": "Numeric argument for vol_up/vol_down (step size), vol_set (absolute level 0-130), or seek (seconds, negative for backward). Ignored for boolean actions."
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ]
+}

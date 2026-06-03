@@ -1,0 +1,64 @@
+[project]
+# Dist name is "yz-music" (PyPI/GH-release); the IMPORT package is "yz_music"
+# (pip normalizes yz-music ⟷ yz_music — same identity). `python -m yz_music`,
+# the JarvYZ-side auto-spawn (`-m yz_music.server`), editable installs all use it.
+name = "yz-music"
+version = "0.0.1"
+description = "Music satellite — YouTube downloader + mpv playback control. Standalone HTTP service with optional JarvYZ integration."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Yeon Vinzenz Varapragasam" }]
+keywords = ["youtube", "music", "mpv", "yt-dlp", "jarvis", "satellite"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+# Phase 2 deps. The CLI itself runs on stdlib alone (urllib, subprocess,
+# json, re, hashlib). FastAPI + uvicorn + pydantic are needed for the
+# server.py daemon mode (`python -m yz_music.server`). yt-dlp + mpv are
+# external binaries discovered via shutil.which — not Python deps.
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    # Used by dependencies.py to check upstream mpv/yt-dlp versions. Declared
+    # here (not just relied on transitively from jarvyz-core) so a standalone
+    # `pip install yz-music` or the frozen exe ships it — else the Dependencies
+    # tab 500s with ModuleNotFoundError: no module named httpx.
+    "httpx>=0.27.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/YeonV/yz-music"
+Repository = "https://github.com/YeonV/yz-music"
+
+[project.scripts]
+# CLI binary on PATH is "yt-play" — preserves the existing Windows
+# protocol handler (mpv-yt://) + tampermonkey userscript bindings with
+# zero re-deploy. Internal package is "yz_music"; the satellite folder stays "music".
+yt-play = "yz_music.cli:main_argv"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "httpx>=0.25", "ruff>=0.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["yz_music*"]
+
+# Ship the bundled SPA assets so a `pip install yz-music` user gets a
+# working UI at http://127.0.0.1:9002/ — no separate npm build needed
+# at install time. Built by `cd ui && npm run build:pages` BEFORE
+# the wheel build; vite outputs into yz_music/static/. Use the wrapper
+# script `bash scripts/build_wheel.sh` which handles the order.
+[tool.setuptools.package-data]
+yz_music = [
+    "static/*",
+    "static/**/*",
+]

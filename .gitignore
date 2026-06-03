@@ -1,0 +1,56 @@
+# Self-contained .gitignore — this satellite is structured to be
+# extractable as its own repo, so don't rely on a parent .gitignore.
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+*.egg-info/
+*.egg
+
+# build outputs (wheel + sdist)
+build/
+dist/
+
+# test + lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# virtual envs
+.venv/
+venv/
+.venv-*/
+env/
+
+# ── Node / Vite (Phase 5+ when the UI lands) ──────────────────────────
+ui/node_modules/
+ui/dist-lib/
+ui/.vite/
+
+# ── Generated artifacts that get bundled into the wheel ───────────────
+# SPA built by `cd ui && npm run build:pages` — source-of-truth is ui/src/.
+# Included in wheels via pyproject.toml [tool.setuptools.package-data].
+music/static/
+
+# ── Logs ──────────────────────────────────────────────────────────────
+*.log
+
+# ── Editor / OS ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ── Env files ─────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local

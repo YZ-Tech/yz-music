@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>yt-play: install</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 4em auto; padding: 0 1em; color: #ddd; background: #111; }
+  h1 { font-weight: 500; }
+  a.bookmarklet {
+    display: inline-block; padding: 12px 22px; border-radius: 22px;
+    background: #ff0033; color: #fff; text-decoration: none; font-weight: 600;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4); cursor: grab; font-size: 15px;
+  }
+  a.bookmarklet:hover { background: #ff1a4d; }
+  code { background: #222; padding: 2px 6px; border-radius: 4px; font-size: .9em; }
+  ol li { margin-bottom: .6em; }
+  .hint { color: #888; font-size: .9em; }
+</style>
+
+<h1>yt-play — install the bookmarklet</h1>
+
+<ol>
+  <li>Make sure the bookmarks bar is visible: <code>Ctrl+Shift+B</code></li>
+  <li>Drag this button onto the bookmarks bar:</li>
+</ol>
+
+<p><a class="bookmarklet" href="javascript:(()=>{const v=document.querySelector('video');if(v)v.pause();location.href='mpv-yt://'+encodeURIComponent(location.href)})();">&#9654; Play locally</a></p>
+
+<ol start="3">
+  <li>Open any YouTube video.</li>
+  <li>Click the bookmark. First click only: the browser asks to open with the registered handler &mdash; tick <em>always allow</em>.</li>
+</ol>
+
+<p class="hint">Works in any Chromium browser and Firefox. No extension, no userscript, no developer-mode toggle. To uninstall: delete the bookmark.</p>
