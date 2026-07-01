@@ -31,6 +31,7 @@ export interface MusicSlice {
   downloads: Download[]
   libraryPath: string
   audioOnly: boolean
+  audioDelayMs: number
   libraryLoading: boolean
   error: string | null
 }
@@ -51,6 +52,7 @@ export interface MusicState {
 
   saveLibraryPath: (path: string) => Promise<void>
   saveAudioOnly: (value: boolean) => Promise<void>
+  saveAudioDelay: (ms: number) => Promise<void>
 
   toggleFallback: (videoId: string, makeFallback: boolean) => Promise<void>
   setFallbackLoop: (loop: boolean) => Promise<void>
@@ -76,6 +78,7 @@ export function createMusicStore(api: MusicApi): MusicStore {
       downloads: [],
       libraryPath: '',
       audioOnly: true,
+      audioDelayMs: 0,
       libraryLoading: false,
       error: null,
     },
@@ -131,6 +134,9 @@ export function createMusicStore(api: MusicApi): MusicStore {
           if (typeof s.audio_only === 'boolean') {
             draft.music.audioOnly = s.audio_only
           }
+          if (typeof s.audio_delay_ms === 'number') {
+            draft.music.audioDelayMs = s.audio_delay_ms
+          }
         }))
       } catch { /* soft-fail */ }
     },
@@ -143,6 +149,15 @@ export function createMusicStore(api: MusicApi): MusicStore {
     saveAudioOnly: async (value: boolean) => {
       await api.patchSettings({ audio_only: value })
       set(produce((draft: MusicState) => { draft.music.audioOnly = value }))
+    },
+
+    saveAudioDelay: async (ms: number) => {
+      // Persist to satellite settings (applied on next mpv spawn via
+      // --audio-delay-ms) AND live-apply to a currently-playing mpv via the
+      // control IPC (best-effort — no-op if nothing is playing).
+      await api.patchSettings({ audio_delay_ms: ms })
+      Promise.resolve(api.control('audio_delay', ms)).catch(() => { /* mpv may be down */ })
+      set(produce((draft: MusicState) => { draft.music.audioDelayMs = ms }))
     },
 
     toggleFallback: async (videoId, makeFallback) => {

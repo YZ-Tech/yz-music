@@ -28,6 +28,7 @@ shows that command as a clickable "Run update" button. The satellite's
 (admin context — see auto_update_cmd docstring)."""
 from __future__ import annotations
 
+import base64
 import os
 import re
 import shlex
@@ -152,14 +153,25 @@ def _fetch_latest_apt(package: str) -> str | None:
 _YT_VERSION_RE = re.compile(r"\d{4}\.\d{2}\.\d{2}(?:\.\d+)?")
 # mpv first line: "mpv 0.40.0 ..." or "mpv-player 0.x.y ..."
 _MPV_VERSION_RE = re.compile(r"^mpv(?:-\S+)?\s+v?(\d+\.\d+(?:\.\d+)?)")
+# ffmpeg version line varies a lot by build:
+#   "ffmpeg version 7.1.1 ..."                     (clean release)
+#   "ffmpeg version 7.1-full_build-www.gyan.dev…"  (Gyan/Windows)
+#   "ffmpeg version 4.4.2-0ubuntu0.22.04.1 ..."    (apt)
+#   "ffmpeg version N-118602-gd21ed2298e-20250303" (git master / nightly)
+# Capture a clean numeric for release/apt builds (so the apt freshness check
+# can compare), else the full git build id. group(1) either way.
+_FFMPEG_VERSION_RE = re.compile(r"^ffmpeg version (n?\d+\.\d+(?:\.\d+)?|N-\d+\S*)")
 
 
-def _probe_version(binary_path: Path, parser: re.Pattern[str]) -> str | None:
-    """Run `<binary> --version`, parse the first matching version.
-    Returns None on any failure (binary missing, slow, prints garbage)."""
+def _probe_version(
+    binary_path: Path, parser: re.Pattern[str], flag: str = "--version"
+) -> str | None:
+    """Run `<binary> <flag>` (default `--version`; ffmpeg wants `-version`),
+    parse the first matching version. Returns None on any failure (binary
+    missing, slow, prints garbage)."""
     try:
         out = subprocess.run(
-            [str(binary_path), "--version"],
+            [str(binary_path), flag],
             capture_output=True,
             text=True,
             timeout=5.0,
@@ -353,6 +365,32 @@ _INSTALL_HINTS: dict[str, dict[str, dict[str, Any]]] = {
             "source": "github:mpv-player/mpv",
         },
     },
+    "ffmpeg": {
+        # Needed for library thumbnail extraction (single-frame grab). Not
+        # version-sensitive — any reasonably recent ffmpeg works — so only
+        # linux declares a `source` (apt gives the freshness check for free);
+        # win/mac omit it (no clean canonical "latest" feed) → the UI just
+        # shows found / install, no outdated nudge.
+        "windows": {
+            "label": "WinGet",
+            "install_cmd": "winget install Gyan.FFmpeg",
+            "update_cmd": "winget upgrade Gyan.FFmpeg",
+            "docs_url": "https://ffmpeg.org/download.html",
+        },
+        "linux": {
+            "label": "apt",
+            "install_cmd": "sudo apt install -y ffmpeg",
+            "update_cmd": "sudo apt upgrade -y ffmpeg",
+            "docs_url": "https://ffmpeg.org/download.html",
+            "source": "apt:ffmpeg",
+        },
+        "macos": {
+            "label": "Homebrew",
+            "install_cmd": "brew install ffmpeg",
+            "update_cmd": "brew upgrade ffmpeg",
+            "docs_url": "https://ffmpeg.org/download.html",
+        },
+    },
 }
 
 
@@ -407,6 +445,14 @@ def _resolve_ytdlp_path() -> Path:
     return _yt_dlp_bin()
 
 
+def _ffmpeg_bin() -> Path:
+    """ffmpeg lookup via PATH. Falls back to a bare `ffmpeg` Path (whose
+    .exists() is False) so status() cleanly reports not-found. Mirrors the
+    `shutil.which("ffmpeg")` the thumbnail route uses."""
+    found = shutil.which("ffmpeg")
+    return Path(found) if found else Path("ffmpeg")
+
+
 # ────────────────────────── public API ────────────────────────────
 
 
@@ -419,21 +465,27 @@ def status() -> dict[str, Any]:
         "platform": _platform_key(),
         "ytdlp": _status_for("ytdlp"),
         "mpv": _status_for("mpv"),
+        "ffmpeg": _status_for("ffmpeg"),
     }
 
 
 def _status_for(name: str) -> dict[str, Any]:
+    version_flag = "--version"
     if name == "ytdlp":
         bin_path = _resolve_ytdlp_path()
         version_re = _YT_VERSION_RE
     elif name == "mpv":
         bin_path = _mpv_bin()
         version_re = _MPV_VERSION_RE
+    elif name == "ffmpeg":
+        bin_path = _ffmpeg_bin()
+        version_re = _FFMPEG_VERSION_RE
+        version_flag = "-version"  # ffmpeg's flag is single-dash
     else:
         raise ValueError(f"unknown dependency: {name}")
 
     found = bin_path.exists()
-    version = _probe_version(bin_path, version_re) if found else None
+    version = _probe_version(bin_path, version_re, version_flag) if found else None
 
     platform = _platform_key()
     hint = _resolve_hint(name, platform)
@@ -443,7 +495,10 @@ def _status_for(name: str) -> dict[str, Any]:
     # not GitHub's "0.41.0". The chip turns green when installed matches
     # the package manager's available version, even when something newer
     # exists upstream that the package manager can't reach.
-    latest = _fetch_latest(hint["source"])
+    # `source` is optional — when absent (e.g. ffmpeg on win/mac, no clean
+    # canonical feed) we skip the freshness check entirely: latest/outdated
+    # stay None and the UI shows found / install only.
+    latest = _fetch_latest(hint["source"]) if hint.get("source") else None
     outdated = _is_outdated(version, latest)
 
     # Optional: when source != upstream, fetch upstream separately so the
@@ -467,8 +522,9 @@ def _status_for(name: str) -> dict[str, Any]:
         "version": version,
         "latest": latest,
         # New field: where `latest` came from. UI uses this for the
-        # tooltip ("via apt" / "via GitHub releases").
-        "source": hint["source"],
+        # tooltip ("via apt" / "via GitHub releases"). None when the dep
+        # declares no source (no freshness check).
+        "source": hint.get("source"),
         # Optional divergence note when upstream is newer than what
         # update_cmd can install. Absent when source == upstream or
         # when they happen to be in sync.
@@ -523,7 +579,7 @@ def run_update(name: str) -> dict[str, Any]:
         stdout / stderr      → present on sync only, capped at 4 KB
         error                → only on spawn-time failure
         message              → user-friendly status hint"""
-    if name not in ("ytdlp", "mpv"):
+    if name not in ("ytdlp", "mpv", "ffmpeg"):
         return {"ok": False, "kind": "copy", "error": f"unknown dependency: {name}"}
     platform = _platform_key()
     # Use the SAME resolver `status()` uses so the button's command
@@ -557,13 +613,19 @@ def _run_update_windows(cmd: str) -> dict[str, Any]:
     the UAC click + winget run typically completes in 5–30 s for a
     single package, so blocking the HTTP request is fine.
 
-    Stdout / stderr from the elevated child can't pipe back through
-    the launcher's stdio (separate session), so we route them through
-    temp files and read after -Wait returns."""
+    We elevate `powershell.exe` (a real .exe — always resolvable, unlike
+    the per-user `winget` App Execution Alias, which Start-Process can't
+    find as a bare -FilePath in the elevated context) and have THAT shell
+    run the update with its own `> / 2>` redirection to temp files. This
+    is what makes capture work: `Start-Process -Verb RunAs` and
+    `-RedirectStandardOutput/-RedirectStandardError` are mutually exclusive
+    in PowerShell (the old code combined them, so the update silently
+    failed before launching). The inner command goes over -EncodedCommand
+    to avoid nested-quoting breakage."""
     parts = shlex.split(cmd, posix=False)
     if not parts:
         return {"ok": False, "kind": "copy", "command": cmd, "error": "empty command"}
-    program, *args = parts
+    program, *_args = parts
 
     out_path: str | None = None
     err_path: str | None = None
@@ -573,17 +635,24 @@ def _run_update_windows(cmd: str) -> dict[str, Any]:
         os.close(out_fd)
         os.close(err_fd)
 
-        # PowerShell -EncodedCommand would dodge quoting issues but is
-        # overkill; arg list is small + we control it.
-        arg_list = ", ".join(f"'{a}'" for a in args) or "''"
+        # winget needs to be told NOT to prompt — in a hidden elevated
+        # window an interactive agreement/selection prompt would hang
+        # until the 5-min timeout.
+        full = cmd
+        if program.lower().startswith("winget"):
+            full += (
+                " --accept-source-agreements --accept-package-agreements"
+                " --disable-interactivity"
+            )
+        # Inner script the ELEVATED shell runs: do the update, redirect all
+        # output to our temp files, and surface the real tool exit code.
+        inner = f"{full} > '{out_path}' 2> '{err_path}'; exit $LASTEXITCODE"
+        enc = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
         ps_script = (
-            f"$p = Start-Process -FilePath '{program}' "
-            f"-ArgumentList @({arg_list}) "
-            f"-Verb RunAs -Wait -PassThru "
-            f"-RedirectStandardOutput '{out_path}' "
-            f"-RedirectStandardError '{err_path}' "
-            f"-WindowStyle Hidden; "
-            f"exit $p.ExitCode"
+            "$p = Start-Process -FilePath 'powershell.exe' "
+            f"-ArgumentList '-NoProfile','-EncodedCommand','{enc}' "
+            "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
+            "exit $p.ExitCode"
         )
 
         try:

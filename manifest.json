@@ -1,7 +1,7 @@
 {
   "id": "music",
   "name": "Music",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "enabled": true,
   "nav": {
     "label": "Music",
@@ -15,7 +15,17 @@
   "settings": {},
   "service": {
     "url": "http://127.0.0.1:9002",
-    "settingPath": "media.satellite_url"
+    "settingPath": "media.satellite_url",
+    "spawnModule": "yz_music.server",
+    "autoSpawnSettingPath": "media.satellite_auto_spawn",
+    "proxy": {
+      "prefix": "/api/media",
+      "graceS": 10,
+      "timeoutS": 30
+    },
+    "events": {
+      "channels": ["now_playing", "download_progress"]
+    }
   },
   "tools": [
     {

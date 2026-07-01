@@ -80,7 +80,7 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
           <Stack direction="row" sx={{ alignItems: 'center', gap: 1, py: 2 }}>
             <CircularProgress size={16} />
             <Typography variant="caption" color="text.secondary">
-              Checking yt-dlp + mpv…
+              Checking yt-dlp, mpv + ffmpeg…
             </Typography>
           </Stack>
         ) : error || !status ? (
@@ -94,10 +94,11 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
               They aren't Python deps — install them via your OS package manager.
               {' '}<b>yt-dlp</b> needs to stay current (YouTube updates the player
               frequently); <b>mpv</b> is fine to leave at whatever your package
-              manager offers.
+              manager offers; <b>ffmpeg</b> is used for library thumbnails.
             </Typography>
             <Stack spacing={3}>
               <DependencyRow
+                id="ytdlp"
                 name="yt-dlp"
                 dep={status.ytdlp}
                 platform={status.platform}
@@ -105,8 +106,17 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
               />
               <Divider />
               <DependencyRow
+                id="mpv"
                 name="mpv"
                 dep={status.mpv}
+                platform={status.platform}
+                onAfterAction={refresh}
+              />
+              <Divider />
+              <DependencyRow
+                id="ffmpeg"
+                name="ffmpeg"
+                dep={status.ffmpeg}
                 platform={status.platform}
                 onAfterAction={refresh}
               />
@@ -127,11 +137,13 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
 
 
 function DependencyRow({
+  id,
   name,
   dep,
   platform,
   onAfterAction,
 }: {
+  id: 'ytdlp' | 'mpv' | 'ffmpeg'
   name: string
   dep: DependencyInfo
   platform: string
@@ -164,7 +176,7 @@ function DependencyRow({
     setBusy(true)
     setResult(null)
     try {
-      const r = await api.runDependencyUpdate(name === 'yt-dlp' ? 'ytdlp' : 'mpv')
+      const r = await api.runDependencyUpdate(id)
       setResult(r)
       if (r.ok && r.kind === 'sync') {
         await onAfterAction()

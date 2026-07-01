@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Card } from '@mui/material'
 import { useMusicStore as useStore } from '../lib/store-context'
+import { AudioDelaySlider } from './AudioDelaySlider'
 import { AudioOnlyToggle } from './AudioOnlyToggle'
 import { LibraryBrowser } from './LibraryBrowser'
 import { LibraryFallbackStrip } from './LibraryFallbackStrip'
@@ -35,6 +36,7 @@ export function LibraryCard() {
         <LibraryBrowser source={source} query={query} />
         <LibraryPathEditor key={libraryPath} path={libraryPath} />
         <AudioOnlyToggle />
+        <AudioDelaySlider />
         <LibraryFallbackStrip />
       </Card>
     </>

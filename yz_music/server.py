@@ -23,19 +23,24 @@ Phase 5 mounts ./static at / for the standalone SPA."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import __version__, settings as _settings_mod
 from . import persistent_settings as _persist  # noqa: F401 — load() runs on import
-from .cli import ipc_send, IPC_NO_MPV, IPC_SENT, MODE_TO_MPV
+from .cli import ipc_send, IPC_NO_MPV, IPC_SENT, MODE_TO_MPV, _yt_dlp_bin
 from .observer import observer
 
 
@@ -347,6 +352,263 @@ def library() -> list[dict]:
     return out
 
 
+# ───────────────── library mutation (parity) ──────────────────────────
+# Ported from the retiring in-core media.py: delete a library item (+ its
+# sidecars, archive ledger entry, cached thumbnail, and mpv watch_later
+# resume points) and update the on-disk library root. The satellite runs
+# as a Windows-host sibling process, so the APPDATA/LOCALAPPDATA watch_later
+# cleanup works identically to the old in-core path.
+
+
+def _archive_path() -> Path:
+    return _settings_mod.settings.library_path / ".archive.txt"
+
+
+def _clear_watch_later(file_path: Path) -> int:
+    """Brute-force every plausible watch_later dir + path-string variant.
+    Returns number of entries removed."""
+    appdata = os.environ.get("APPDATA", "")
+    local = os.environ.get("LOCALAPPDATA", "")
+    dirs: list[Path] = []
+    for base in (local, appdata):
+        if not base:
+            continue
+        for sub in ("mpv", "mpv.net"):
+            d = Path(base) / sub / "watch_later"
+            if d.exists():
+                dirs.append(d)
+    if not dirs:
+        return 0
+    paths = {str(file_path), str(file_path.resolve())}
+    paths.update({p.replace("\\", "/") for p in list(paths)})
+    removed = 0
+    for p in paths:
+        digest = hashlib.md5(p.encode("utf-8")).hexdigest()
+        for variant in (digest, digest.upper()):
+            for d in dirs:
+                target = d / variant
+                if target.exists():
+                    try:
+                        target.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+    return removed
+
+
+def _remove_from_archive(video_id: str) -> bool:
+    archive = _archive_path()
+    if not archive.exists():
+        return False
+    needle = f"youtube {video_id}"
+    try:
+        lines = archive.read_text(encoding="ascii").splitlines()
+    except OSError:
+        return False
+    kept = [line for line in lines if line.strip() != needle]
+    if len(kept) == len(lines):
+        return False
+    try:
+        archive.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="ascii")
+    except OSError:
+        return False
+    return True
+
+
+@app.delete("/library/{video_id}")
+def delete_library_item(video_id: str) -> dict:
+    """Delete the .mkv (+ any sidecars sharing the [video_id]) and clean up
+    the archive ledger, cached thumbnail, and mpv watch_later entries."""
+    if not _VIDEO_ID_VALID.match(video_id):
+        raise HTTPException(400, "invalid video id")
+    lib = _settings_mod.settings.library_path
+    if not lib.exists():
+        raise HTTPException(404, "library not found")
+    needle = f"[{video_id}]"
+    # NEVER rglob(f"*{needle}*") — brackets are an fnmatch character class.
+    # Walk all files and substring-check the filename instead.
+    targets = [p for p in lib.rglob("*") if p.is_file() and needle in p.name]
+    if not targets:
+        raise HTTPException(404, "no files matched")
+    deleted: list[str] = []
+    watch_later_removed = 0
+    for path in targets:
+        watch_later_removed += _clear_watch_later(path)
+        try:
+            path.unlink()
+            deleted.append(str(path))
+        except OSError as e:
+            raise HTTPException(500, f"could not delete {path.name}: {e}") from e
+    archive_removed = _remove_from_archive(video_id)
+    thumb = _thumbnail_path(video_id)
+    if thumb.exists():
+        try:
+            thumb.unlink()
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "archive_removed": archive_removed,
+        "watch_later_removed": watch_later_removed,
+    }
+
+
+@app.put("/library_path")
+def put_library_path(body: dict = Body(...)) -> dict:
+    """Update the on-disk library root. Body: {path: str}. Existence is not
+    enforced — the user may point at a path they haven't created yet."""
+    raw = body.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(400, "path must be a non-empty string")
+    _persist.apply_patch({"library_path": raw.strip()})
+    return {"ok": True, "path": str(_settings_mod.settings.library_path)}
+
+
+# ───────────────── search / thumbnail / fallback (parity) ─────────────
+# Ported from the retiring in-core media.py so the satellite owns the FULL
+# media surface; JarvYZ then proxies /api/media/* generically. Fallback now
+# lives in ONE place (the satellite settings) instead of also in core settings.
+
+_VIDEO_ID_VALID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _find_video_file(video_id: str) -> Path | None:
+    lib = _settings_mod.settings.library_path
+    if not lib.exists():
+        return None
+    needle = f"[{video_id}]"
+    for path in lib.rglob("*.mkv"):
+        if needle in path.name:
+            return path
+    return None
+
+
+def _thumbnail_path(video_id: str) -> Path:
+    return _settings_mod.settings.library_path / ".thumbnails" / f"{video_id}.jpg"
+
+
+def _extract_thumbnail(video: Path, out: Path) -> bool:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-ss", "5", "-i", str(video),
+             "-vframes", "1", "-vf", "scale=320:-1", str(out)],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.exists()
+
+
+@app.get("/search/youtube")
+def search_youtube(q: str, limit: int = 5) -> list[dict]:
+    """Search YouTube via yt-dlp ytsearch{N}. Metadata only, no download."""
+    if not q.strip():
+        return []
+    limit = max(1, min(int(limit), 10))
+    yt = _yt_dlp_bin()
+    try:
+        out = subprocess.run(
+            [str(yt), "--default-search", f"ytsearch{limit}",
+             "--print", "%(id)s\t%(title)s\t%(channel)s\t%(webpage_url)s\t%(duration)s",
+             "--no-warnings", "--skip-download", "--flat-playlist", q],
+            capture_output=True, text=True, timeout=25,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise HTTPException(502, f"yt-dlp failed: {e}") from e
+    results: list[dict] = []
+    for line in (out.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        vid, title, channel, url, duration = parts[:5]
+        try:
+            dur = int(float(duration)) if duration and duration != "NA" else None
+        except ValueError:
+            dur = None
+        results.append({"video_id": vid, "title": title, "channel": channel,
+                        "url": url, "duration_seconds": dur})
+    return results
+
+
+@app.get("/thumbnail/{video_id}")
+def thumbnail(video_id: str) -> FileResponse:
+    """JPEG thumbnail from the library .mkv (frame ~5s, 320w), cached in
+    <library>/.thumbnails/."""
+    if not _VIDEO_ID_VALID.match(video_id):
+        raise HTTPException(400, "invalid video id")
+    cached = _thumbnail_path(video_id)
+    if not cached.exists():
+        video = _find_video_file(video_id)
+        if video is None:
+            raise HTTPException(404, "video not found")
+        if not _extract_thumbnail(video, cached):
+            raise HTTPException(500, "thumbnail extraction failed")
+    return FileResponse(cached, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+def _fallback_state() -> dict:
+    s = _settings_mod.settings
+    ids = list(s.fallback_video_ids or [])
+    by_id = {it["video_id"]: it for it in library()}
+    return {
+        "ids": ids,
+        "loop": bool(s.fallback_loop),
+        "items": [{"video_id": v, "metadata": by_id.get(v)} for v in ids],
+    }
+
+
+@app.get("/fallback")
+def get_fallback() -> dict:
+    return _fallback_state()
+
+
+@app.put("/fallback")
+def put_fallback(body: dict = Body(...)) -> dict:
+    patch: dict = {}
+    if "ids" in body:
+        ids = body["ids"]
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise HTTPException(400, "ids must be a list of strings")
+        seen: set[str] = set(); cleaned: list[str] = []
+        for v in ids:
+            if _VIDEO_ID_VALID.match(v) and v not in seen:
+                seen.add(v); cleaned.append(v)
+        patch["fallback_video_ids"] = cleaned
+    if "loop" in body:
+        if not isinstance(body["loop"], bool):
+            raise HTTPException(400, "loop must be boolean")
+        patch["fallback_loop"] = body["loop"]
+    if patch:
+        _persist.apply_patch(patch)
+    return _fallback_state()
+
+
+@app.post("/fallback/{video_id}")
+def add_fallback(video_id: str) -> dict:
+    if not _VIDEO_ID_VALID.match(video_id):
+        raise HTTPException(400, "invalid video id")
+    ids = list(_settings_mod.settings.fallback_video_ids or [])
+    if video_id not in ids:
+        ids.append(video_id)
+        _persist.apply_patch({"fallback_video_ids": ids})
+    return _fallback_state()
+
+
+@app.delete("/fallback/{video_id}")
+def remove_fallback(video_id: str) -> dict:
+    ids = list(_settings_mod.settings.fallback_video_ids or [])
+    if video_id in ids:
+        ids.remove(video_id)
+        _persist.apply_patch({"fallback_video_ids": ids})
+    return _fallback_state()
+
+
 # ─────────────────────────── downloads ────────────────────────────
 
 
@@ -361,24 +623,53 @@ class _ProgressBody(BaseModel):
     rate: str = ""
 
 
+_downloads_lock = threading.Lock()
 _downloads: dict[str, dict] = {}
+
+# Keep done/error entries visible briefly after the terminal update so the UI
+# can flash a "complete"/"failed" state before the chip fades.
+_GRACE_SECONDS = 5.0
+
+
+def _emit_downloads_snapshot() -> None:
+    """Broadcast the full active list. The UI subscriber replaces its local
+    state with this on each event (simpler than reconciling deltas), so the
+    WS payload is `{downloads: [...]}` — matching the now-retired in-core
+    media.py contract and the satellite UI's `useSubscription` handler."""
+    with _downloads_lock:
+        items = list(_downloads.values())
+    _emit("download_progress", {"downloads": items})
+
+
+def _schedule_download_cleanup(dl_id: str) -> None:
+    def _drop() -> None:
+        with _downloads_lock:
+            _downloads.pop(dl_id, None)
+        _emit_downloads_snapshot()
+    t = threading.Timer(_GRACE_SECONDS, _drop)
+    t.daemon = True
+    t.start()
 
 
 @app.post("/download/progress")
 def download_progress(body: _ProgressBody) -> dict:
-    """CLI children POST here on every yt-dlp progress tick. We update
-    the in-memory dict + broadcast on the WS."""
-    import time as _time
-    rec = {**body.model_dump(), "updated_at": _time.time()}
-    _downloads[body.id] = rec
-    _emit("download_progress", rec)
+    """CLI children POST here on every yt-dlp progress tick. We update the
+    in-memory snapshot, broadcast the full list on the WS, and schedule
+    cleanup of terminal-state entries."""
+    rec = {**body.model_dump(), "updated_at": time.time()}
+    with _downloads_lock:
+        _downloads[body.id] = rec
+    _emit_downloads_snapshot()
+    if body.status in ("done", "error"):
+        _schedule_download_cleanup(body.id)
     return {"ok": True}
 
 
 @app.get("/downloads")
 def downloads() -> dict:
     """Snapshot of all download records (active + recent terminal)."""
-    return {"downloads": list(_downloads.values())}
+    with _downloads_lock:
+        return {"downloads": list(_downloads.values())}
 
 
 # ─────────────────────── LLM tools (JarvYZ-facing) ────────────────

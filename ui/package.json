@@ -1,7 +1,7 @@
 {
   "name": "yz-music-ui",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Music satellite UI — shipped as react-dynamic-module IIFE for JarvYZ, also buildable as a standalone SPA served by the satellite at /.",
   "scripts": {

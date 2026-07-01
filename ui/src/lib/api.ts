@@ -65,7 +65,7 @@ export interface MusicApi {
   // Both methods optional because the standalone-pre-Phase-N satellite
   // didn't ship them; in practice both adapters provide them now.
   getDependencies?(): Promise<DependenciesStatus>
-  runDependencyUpdate?(name: 'ytdlp' | 'mpv'): Promise<DependencyUpdateResult>
+  runDependencyUpdate?(name: 'ytdlp' | 'mpv' | 'ffmpeg'): Promise<DependencyUpdateResult>
 }
 
 export interface DependencyInfo {
@@ -104,6 +104,7 @@ export interface DependenciesStatus {
   platform: 'windows' | 'linux' | 'macos'
   ytdlp: DependencyInfo
   mpv: DependencyInfo
+  ffmpeg: DependencyInfo
 }
 
 export interface DependencyUpdateResult {
