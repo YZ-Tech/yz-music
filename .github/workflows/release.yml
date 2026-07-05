@@ -49,6 +49,12 @@ jobs:
       - name: Read version from pyproject.toml
         id: ver
         run: echo "VERSION=$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+      - name: Version gate - a repo's first release must be 0.0.1
+        run: |
+          if [ "$(git ls-remote --tags origin | wc -l)" -eq 0 ] && [ "${{ steps.ver.outputs.VERSION }}" != "0.0.1" ]; then
+            echo "::error::No tags exist on this repo yet - the FIRST release must be version 0.0.1 (got ${{ steps.ver.outputs.VERSION }}). Fix the version fields and re-release."
+            exit 1
+          fi
       - name: Sync manifest.json to that version
         run: |
           node -e "const fs=require('fs');const p='manifest.json';const m=JSON.parse(fs.readFileSync(p));m.version='${{ steps.ver.outputs.VERSION }}';fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
