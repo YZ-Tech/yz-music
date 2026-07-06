@@ -247,8 +247,12 @@ _INSTALL_HINTS: dict[str, dict[str, dict[str, Any]]] = {
     "ytdlp": {
         "windows": {
             "label": "WinGet (recommended on Windows)",
-            "install_cmd": "winget install yt-dlp.yt-dlp",
-            "update_cmd": "winget upgrade yt-dlp.yt-dlp",
+            # -e -s winget: exact id, community source ONLY. Without the
+            # source pin winget also consults msstore, which demands
+            # region + Terms-of-Transaction acceptance on fresh machines
+            # and fails non-interactively (first bro-install, 2026-07-06).
+            "install_cmd": "winget install -e -s winget yt-dlp.yt-dlp",
+            "update_cmd": "winget upgrade -e -s winget yt-dlp.yt-dlp",
             "docs_url": "https://github.com/yt-dlp/yt-dlp/releases/latest",
             # WinGet tracks yt-dlp upstream releases tightly (auto-published
             # via WinGet's GitHub-watcher). Treat upstream as authoritative.
@@ -332,8 +336,8 @@ _INSTALL_HINTS: dict[str, dict[str, dict[str, Any]]] = {
     "mpv": {
         "windows": {
             "label": "WinGet (mpv.net is what JarvYZ spawns on Windows)",
-            "install_cmd": "winget install stax76.mpvnet",
-            "update_cmd": "winget upgrade stax76.mpvnet",
+            "install_cmd": "winget install -e -s winget stax76.mpvnet",
+            "update_cmd": "winget upgrade -e -s winget stax76.mpvnet",
             "docs_url": "https://github.com/mpvnet-player/mpv.net/releases/latest",
             # mpv.net usually tracks mpv but on its own cadence; using
             # upstream mpv-player/mpv as `latest` is close enough for
@@ -373,8 +377,8 @@ _INSTALL_HINTS: dict[str, dict[str, dict[str, Any]]] = {
         # shows found / install, no outdated nudge.
         "windows": {
             "label": "WinGet",
-            "install_cmd": "winget install Gyan.FFmpeg",
-            "update_cmd": "winget upgrade Gyan.FFmpeg",
+            "install_cmd": "winget install -e -s winget Gyan.FFmpeg",
+            "update_cmd": "winget upgrade -e -s winget Gyan.FFmpeg",
             "docs_url": "https://ffmpeg.org/download.html",
         },
         "linux": {
@@ -451,6 +455,18 @@ def _ffmpeg_bin() -> Path:
     `shutil.which("ffmpeg")` the thumbnail route uses."""
     found = shutil.which("ffmpeg")
     return Path(found) if found else Path("ffmpeg")
+
+
+def _bin_for(name: str) -> Path:
+    """Binary path for a dependency — the shared resolver behind both
+    status() and run_update()'s install-vs-update decision."""
+    if name == "ytdlp":
+        return _resolve_ytdlp_path()
+    if name == "mpv":
+        return _mpv_bin()
+    if name == "ffmpeg":
+        return _ffmpeg_bin()
+    raise ValueError(f"unknown dependency: {name}")
 
 
 # ────────────────────────── public API ────────────────────────────
@@ -587,7 +603,10 @@ def run_update(name: str) -> dict[str, Any]:
     # the base hint's update_cmd even when a preferred alternative
     # (uv/pipx/curl) is available.
     hint = _resolve_hint(name, platform)
-    cmd = hint["update_cmd"]
+    # Fresh machine → INSTALL, not upgrade. `winget upgrade` on a
+    # never-installed package fails with "no installed package found"
+    # (first bro-install field report, 2026-07-06).
+    cmd = hint["update_cmd"] if _bin_for(name).exists() else hint["install_cmd"]
 
     if platform == "windows":
         return _run_update_windows(cmd)
