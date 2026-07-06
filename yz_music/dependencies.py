@@ -609,7 +609,24 @@ def run_update(name: str) -> dict[str, Any]:
     cmd = hint["update_cmd"] if _bin_for(name).exists() else hint["install_cmd"]
 
     if platform == "windows":
-        return _run_update_windows(cmd)
+        result = _run_update_windows(cmd)
+        # Belt for the field case (second bro report, 2026-07-06): winget can
+        # still answer "no installed package found" — e.g. the binary exists
+        # but ISN'T winget-managed (PATH copy, portable exe), so the update
+        # path is chosen honestly yet winget has nothing to upgrade. Detect
+        # that class (DE + EN message forms) and fall through to a clean
+        # install once.
+        if cmd == hint["update_cmd"] and _looks_like_not_installed(result):
+            retry = _run_update_windows(hint["install_cmd"])
+            retry["message"] = (
+                "Update found no winget-managed install — ran a fresh install instead."
+            )
+            retry["first_attempt"] = {
+                "command": cmd,
+                "exit_code": result.get("exit_code"),
+            }
+            return retry
+        return result
     if platform == "linux":
         return _run_update_linux(cmd)
     # macOS + anything else falls through to copy-paste
@@ -625,6 +642,15 @@ def run_update(name: str) -> dict[str, Any]:
 
 
 # ─────────────────────────── Windows: UAC ─────────────────────────
+
+
+def _looks_like_not_installed(result: dict[str, Any]) -> bool:
+    """winget's 'nothing to upgrade' class, DE + EN message forms."""
+    blob = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
+    return (
+        "kein installiertes paket" in blob
+        or "no installed package found" in blob
+    )
 
 
 def _run_update_windows(cmd: str) -> dict[str, Any]:
