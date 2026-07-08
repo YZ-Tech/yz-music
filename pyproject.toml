@@ -3,7 +3,7 @@
 # (pip normalizes yz-music ⟷ yz_music — same identity). `python -m yz_music`,
 # the JarvYZ-side auto-spawn (`-m yz_music.server`), editable installs all use it.
 name = "yz-music"
-version = "0.0.4"
+version = "0.0.5"
 description = "Play YouTube Video via mpv to set Audio/Video delay"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

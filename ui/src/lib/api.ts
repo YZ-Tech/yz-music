@@ -66,6 +66,9 @@ export interface MusicApi {
   // didn't ship them; in practice both adapters provide them now.
   getDependencies?(): Promise<DependenciesStatus>
   runDependencyUpdate?(name: 'ytdlp' | 'mpv' | 'ffmpeg'): Promise<DependencyUpdateResult>
+  /** Install/update ALL missing-or-outdated deps in one elevated pass (single
+   *  UAC / sudo prompt). Returns kind:'noop' when nothing needs doing. */
+  runDependencyUpdateAll?(): Promise<DependencyUpdateResult>
 }
 
 export interface DependencyInfo {
@@ -86,7 +89,7 @@ export interface DependencyInfo {
   /** Soft note for "newer version exists upstream but the configured
    *  package manager can't reach there". Only present when source !=
    *  upstream AND upstream is genuinely newer than what's installable
-   *  via update_cmd. UI shows this as a small ✨ pill, NOT as red/amber. */
+   *  via update_cmd. UI shows this as a small sparkle pill, NOT as red/amber. */
   upstream?: {
     version: string
     source: string
@@ -110,10 +113,13 @@ export interface DependenciesStatus {
 export interface DependencyUpdateResult {
   ok: boolean
   /** How the update was attempted, drives UI rendering:
-   *  - 'sync'  — Windows UAC path; check exit_code + stdout/stderr
-   *  - 'async' — Linux terminal path; check spawned_terminal + message
-   *  - 'copy'  — no automation available; show message + the copy command */
-  kind?: 'sync' | 'async' | 'copy'
+   *  - 'async' — an elevated window / terminal was launched (Windows UAC or
+   *              Linux sudo terminal); check spawned_terminal + message, then
+   *              Re-check for the result
+   *  - 'noop'  — nothing to do (all deps current); show message only
+   *  - 'copy'  — no automation available; show message + the copy command
+   *  ('sync' is retired — the Windows path is async now, see dependencies.py) */
+  kind?: 'async' | 'noop' | 'copy'
   command?: string
   exit_code?: number
   stdout?: string
@@ -197,6 +203,7 @@ export function createSatelliteApi({ apiBase = '' }: { apiBase?: string } = {}):
 
     getDependencies: () => h.request('GET', '/dependencies'),
     runDependencyUpdate: (name) => h.request('POST', '/dependencies/update', { name }),
+    runDependencyUpdateAll: () => h.request('POST', '/dependencies/update_all'),
 
     // Standalone-only: thumbnail comes from the satellite. (Phase 6 — for
     // now the SPA can render YouTube's i.ytimg.com directly.)

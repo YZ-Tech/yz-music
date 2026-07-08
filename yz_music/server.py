@@ -175,6 +175,16 @@ def post_dependencies_update(body: dict) -> dict:
     return deps.run_update(name)
 
 
+@app.post("/dependencies/update_all")
+def post_dependencies_update_all() -> dict:
+    """Check all three deps and install/update ONLY what's missing or outdated
+    in ONE elevated pass (single UAC on Windows / one sudo terminal on Linux).
+    User opt-in only — the UI's 'Install / repair all' button. Returns a 'noop'
+    kind when nothing needs doing."""
+    from . import dependencies as deps
+    return deps.run_update_all()
+
+
 # ─────────────────────────── health ───────────────────────────────
 
 
@@ -489,13 +499,14 @@ def _thumbnail_path(video_id: str) -> Path:
 
 
 def _extract_thumbnail(video: Path, out: Path) -> bool:
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+    from .cli import _ffmpeg_bin  # robust resolver (live PATH + winget dirs)
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg.exists():
         return False
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
-            [ffmpeg, "-y", "-ss", "5", "-i", str(video),
+            [str(ffmpeg), "-y", "-ss", "5", "-i", str(video),
              "-vframes", "1", "-vf", "scale=320:-1", str(out)],
             capture_output=True, timeout=20,
         )

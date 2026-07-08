@@ -51,6 +51,35 @@ interface Props {
  *  `open`, auto-opens once on first detection of an issue, gear icon
  *  in the page header is the always-visible affordance + badge. */
 export function DependenciesDialog({ open, onClose, status, loading, error, refresh }: Props) {
+  const api = useApi()
+  const [allBusy, setAllBusy] = useState(false)
+  const [allResult, setAllResult] = useState<DependencyUpdateResult | null>(null)
+
+  // How many of the three need action (missing OR outdated) — drives the
+  // batch button's badge. can't-tell (outdated === null) is not counted.
+  const pending = status
+    ? (['ytdlp', 'mpv', 'ffmpeg'] as const).filter(
+        (k) => !status[k].found || status[k].outdated === true,
+      ).length
+    : 0
+
+  const runAll = async () => {
+    if (!api.runDependencyUpdateAll) return
+    setAllBusy(true)
+    setAllResult(null)
+    try {
+      const r = await api.runDependencyUpdateAll()
+      setAllResult(r)
+      // async → a window/terminal was launched (re-check picks up the result);
+      // noop → nothing to do. Both are worth a refresh.
+      if (r.ok && (r.kind === 'async' || r.kind === 'noop')) await refresh()
+    } catch (e) {
+      setAllResult({ ok: false, error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setAllBusy(false)
+    }
+  }
+
   return (
     <Dialog
       open={open}
@@ -76,6 +105,25 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
       <Divider />
 
       <DialogContent sx={{ pt: 2 }}>
+        {allResult && (
+          <Alert
+            severity={
+              allResult.kind === 'noop'
+                ? 'success'
+                : allResult.kind === 'async'
+                  ? 'info'
+                  : allResult.error
+                    ? 'error'
+                    : 'warning'
+            }
+            onClose={() => setAllResult(null)}
+            sx={{ mb: 2 }}
+          >
+            {allResult.error
+              ? `Install failed to launch: ${allResult.error}`
+              : (allResult.message ?? 'Done.')}
+          </Alert>
+        )}
         {loading && !status ? (
           <Stack direction="row" sx={{ alignItems: 'center', gap: 1, py: 2 }}>
             <CircularProgress size={16} />
@@ -101,31 +149,37 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
                 id="ytdlp"
                 name="yt-dlp"
                 dep={status.ytdlp}
-                platform={status.platform}
-                onAfterAction={refresh}
-              />
+                platform={status.platform}              />
               <Divider />
               <DependencyRow
                 id="mpv"
                 name="mpv"
                 dep={status.mpv}
-                platform={status.platform}
-                onAfterAction={refresh}
-              />
+                platform={status.platform}              />
               <Divider />
               <DependencyRow
                 id="ffmpeg"
                 name="ffmpeg"
                 dep={status.ffmpeg}
-                platform={status.platform}
-                onAfterAction={refresh}
-              />
+                platform={status.platform}              />
             </Stack>
           </>
         )}
       </DialogContent>
 
-      <DialogActions>
+      <DialogActions sx={{ justifyContent: 'space-between' }}>
+        <Tooltip title="Check all three and install/update only what's missing or outdated — one UAC / sudo prompt for the lot.">
+          <span>
+            <Button
+              variant="contained"
+              startIcon={allBusy ? <CircularProgress size={14} /> : <AutoAwesomeIcon />}
+              onClick={runAll}
+              disabled={allBusy || !status || !api.runDependencyUpdateAll}
+            >
+              {pending > 0 ? `Install / repair all (${pending})` : 'Install / repair all'}
+            </Button>
+          </span>
+        </Tooltip>
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
     </Dialog>
@@ -141,13 +195,11 @@ function DependencyRow({
   name,
   dep,
   platform,
-  onAfterAction,
 }: {
   id: 'ytdlp' | 'mpv' | 'ffmpeg'
   name: string
   dep: DependencyInfo
   platform: string
-  onAfterAction: () => Promise<void>
 }) {
   const api = useApi()
   const [busy, setBusy] = useState(false)
@@ -178,9 +230,9 @@ function DependencyRow({
     try {
       const r = await api.runDependencyUpdate(id)
       setResult(r)
-      if (r.ok && r.kind === 'sync') {
-        await onAfterAction()
-      }
+      // async now on every platform: an elevated window / terminal was
+      // launched, so there's nothing to show yet — the user clicks the
+      // dialog's Re-check when it finishes. No premature auto-refresh.
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) })
     } finally {

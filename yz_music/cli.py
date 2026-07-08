@@ -51,6 +51,54 @@ LIBRARY = Path(r"D:\Media\YouTube") if _IS_WIN else Path.home() / "Media" / "You
 ARCHIVE = LIBRARY / ".archive.txt"
 LOG_FILE = LIBRARY / ".yt-play.log"
 
+
+def _live_path_dirs() -> list[str]:
+    r"""PATH directories, refreshed from the Windows registry so a binary added
+    to PATH *after* this process launched is still found without a restart.
+    os.environ['PATH'] is only a snapshot from process start (what shutil.which
+    reads); on Windows we additionally read the live HKLM (system) + HKCU (user)
+    ``Environment\Path``. Non-Windows: just the process PATH."""
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        for d in raw.split(os.pathsep):
+            d = os.path.expandvars(d.strip().strip('"'))
+            if d and d.lower() not in seen:
+                seen.add(d.lower())
+                dirs.append(d)
+
+    _add(os.environ.get("PATH", ""))
+    if _IS_WIN:
+        try:
+            import winreg
+            for hive, sub in (
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                (winreg.HKEY_CURRENT_USER, "Environment"),
+            ):
+                try:
+                    with winreg.OpenKey(hive, sub) as key:
+                        val, _ = winreg.QueryValueEx(key, "Path")
+                        _add(str(val))
+                except OSError:
+                    pass  # key/value absent — skip
+        except Exception:
+            pass  # winreg unavailable — process PATH only
+    return dirs
+
+
+def _which_live(name: str) -> Path | None:
+    """Like shutil.which, but against the registry-refreshed live PATH, so a
+    freshly-installed binary is found with no app restart. Windows appends .exe."""
+    exe = f"{name}.exe" if _IS_WIN else name
+    for d in _live_path_dirs():
+        cand = Path(d) / exe
+        if cand.exists():
+            return cand
+    return None
+
+
 def _mpv_bin() -> Path:
     """Locate the mpv binary. Windows: mpv.net (the user's existing
     install). Linux/macOS: vanilla mpv via PATH (shutil.which)."""
@@ -72,15 +120,50 @@ def _yt_dlp_bin() -> Path:
     sibling = Path(sys.executable).parent / ("yt-dlp.exe" if _IS_WIN else "yt-dlp")
     if sibling.exists():
         return sibling
-    found = shutil.which("yt-dlp")
+    found = _which_live("yt-dlp")   # live PATH — sees a just-installed yt-dlp
     if found:
-        return Path(found)
+        return found
     if _IS_WIN:
         local = os.environ.get("LOCALAPPDATA", "")
         return (Path(local) / "Microsoft" / "WinGet" / "Packages"
                 / "yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe"
                 / "yt-dlp.exe")
     return Path("/usr/bin/yt-dlp")
+
+
+def _ffmpeg_bin() -> Path:
+    r"""Locate ffmpeg. It has no single canonical install dir (and, unlike
+    mpv/yt-dlp, no obvious single fallback), so try in order: the LIVE PATH
+    (registry-refreshed on Windows — the old plain ``shutil.which`` read only
+    the stale process PATH, so an ffmpeg added/installed after launch stayed
+    invisible until a full restart), then winget's Links + the Gyan.FFmpeg
+    package dir, then common manual locations. Returns a bare ``Path("ffmpeg")``
+    (whose ``.exists()`` is False) when genuinely absent, so callers can test
+    ``.exists()`` uniformly."""
+    found = _which_live("ffmpeg")
+    if found:
+        return found
+    if _IS_WIN:
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidates = [Path(local) / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe"]
+        pkgs = Path(local) / "Microsoft" / "WinGet" / "Packages"
+        if pkgs.is_dir():
+            candidates += sorted(pkgs.glob("Gyan.FFmpeg*/**/bin/ffmpeg.exe"), reverse=True)
+        candidates += [
+            Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ffmpeg" / "bin" / "ffmpeg.exe",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+    return Path("ffmpeg")
+
+
+def _ffmpeg_dir() -> str | None:
+    """Directory of a resolved ffmpeg (for yt-dlp's ``--ffmpeg-location``), or
+    None when ffmpeg can't be found anywhere."""
+    b = _ffmpeg_bin()
+    return str(b.parent) if b.exists() else None
 
 
 def _ipc_path() -> str:
@@ -331,8 +414,15 @@ def download(url: str) -> int:
         # parse + echo each line so the console keeps the friendly yt-dlp UI
         # while we also POST to JarvYZ for the Music page chip.
         "--newline",
-        url,
     ]
+    # Hand yt-dlp our resolved ffmpeg (live-PATH / winget aware) so the
+    # video+audio merge and thumbnail/metadata embed happen even when yt-dlp's
+    # own inherited PATH is stale — otherwise it leaves the streams unmerged
+    # (video-only + audio + thumbnail as separate files).
+    ff_dir = _ffmpeg_dir()
+    if ff_dir:
+        cmd += ["--ffmpeg-location", ff_dir]
+    cmd.append(url)
     print(f"[yt-play] downloading: {url}", flush=True)
 
     video_id = extract_video_id(url) or ""

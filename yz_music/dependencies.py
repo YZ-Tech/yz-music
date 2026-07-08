@@ -35,7 +35,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -43,7 +42,7 @@ from typing import Any
 
 import httpx
 
-from .cli import _mpv_bin, _yt_dlp_bin
+from .cli import _ffmpeg_bin, _mpv_bin, _yt_dlp_bin
 
 
 # ────────────────────────── cache ─────────────────────────────────
@@ -336,8 +335,8 @@ _INSTALL_HINTS: dict[str, dict[str, dict[str, Any]]] = {
     "mpv": {
         "windows": {
             "label": "WinGet (mpv.net is what JarvYZ spawns on Windows)",
-            "install_cmd": "winget install -e -s winget stax76.mpvnet",
-            "update_cmd": "winget upgrade -e -s winget stax76.mpvnet",
+            "install_cmd": "winget install -e -s winget mpv.net",
+            "update_cmd": "winget upgrade -e -s winget mpv.net",
             "docs_url": "https://github.com/mpvnet-player/mpv.net/releases/latest",
             # mpv.net usually tracks mpv but on its own cadence; using
             # upstream mpv-player/mpv as `latest` is close enough for
@@ -449,14 +448,6 @@ def _resolve_ytdlp_path() -> Path:
     return _yt_dlp_bin()
 
 
-def _ffmpeg_bin() -> Path:
-    """ffmpeg lookup via PATH. Falls back to a bare `ffmpeg` Path (whose
-    .exists() is False) so status() cleanly reports not-found. Mirrors the
-    `shutil.which("ffmpeg")` the thumbnail route uses."""
-    found = shutil.which("ffmpeg")
-    return Path(found) if found else Path("ffmpeg")
-
-
 def _bin_for(name: str) -> Path:
     """Binary path for a dependency — the shared resolver behind both
     status() and run_update()'s install-vs-update decision."""
@@ -560,201 +551,175 @@ def _status_for(name: str) -> dict[str, Any]:
 
 
 def run_update(name: str) -> dict[str, Any]:
-    """Spawn the platform-appropriate update command for `name`,
-    delegating elevation to the OS:
+    """Install-or-update ONE dependency, delegating elevation to the OS. The
+    install-vs-update decision is `_bin_for(name).exists()` — install when the
+    binary is absent (a fresh machine), update when present.
 
-    - **Windows**: PowerShell `Start-Process -Verb RunAs -Wait` triggers
-      UAC. User clicks Yes. Elevated child runs, we capture stdout/
-      stderr via temp files. Synchronous — returns when the update
-      completes (or UAC is denied).
+    ASYNC on every platform: Windows launches ONE elevated, visible PowerShell
+    (single UAC) and returns immediately; Linux spawns a terminal (sudo prompts
+    there). We deliberately do NOT block on the install — the old synchronous
+    Windows path (`subprocess.run(timeout=300)`) routinely blew past the 30s
+    satellite proxy timeout and surfaced to the browser as a 500 even though the
+    install completed. See `_spawn_elevated_windows`.
 
-    - **Linux / WSL with DISPLAY**: spawn a detached terminal window
-      (gnome-terminal / konsole / tilix / xterm / x-terminal-emulator,
-      first-found wins) running `sudo <cmd>`. sudo prompts inside the
-      terminal — the terminal IS the elevation surface. The window
-      stays open after the command runs ("Press Enter to close") so
-      the user sees the result. Asynchronous — returns immediately
-      after spawning; the UI's Re-check button picks up the new state.
-
-    - **Linux headless / no terminal available / macOS**: fall back to
-      a structured "copy this command" response. UI surfaces it with
-      the install_hint.update_cmd already on the card.
-
-    Caller (the proxy) is responsible for the user-explicit-opt-in gate
-    (this is only ever called from a button click). This fn doesn't
-    second-guess.
-
-    Return shape — fields are all optional, UI reads what's present:
-        ok                   → True iff the elevation flow began cleanly
-        command              → the command that was / will be run
-        kind                 → "sync"  (Windows; check exit_code/stderr)
-                             | "async" (Linux; check spawned_terminal)
-                             | "copy"  (no automation available)
-        spawned_terminal     → terminal binary name (Linux async)
-        exit_code            → present on sync only
-        stdout / stderr      → present on sync only, capped at 4 KB
-        error                → only on spawn-time failure
-        message              → user-friendly status hint"""
+    Return shape (all optional; UI reads what's present):
+        ok               → True iff the elevation surface launched cleanly
+        kind             → "async" (window/terminal launched; UI re-checks)
+                         | "copy"  (no automation available)
+                         | "noop"  (nothing to do — batch only)
+        command          → the command(s) that will run
+        spawned_terminal → the launched surface's name
+        error            → only on spawn-time failure
+        message          → user-friendly status hint"""
     if name not in ("ytdlp", "mpv", "ffmpeg"):
         return {"ok": False, "kind": "copy", "error": f"unknown dependency: {name}"}
     platform = _platform_key()
-    # Use the SAME resolver `status()` uses so the button's command
-    # matches the hint the UI just rendered. Without this we'd execute
-    # the base hint's update_cmd even when a preferred alternative
-    # (uv/pipx/curl) is available.
+    # Use the SAME resolver `status()` uses so the button's command matches the
+    # hint the UI just rendered (a preferred uv/pipx/curl alternative, etc).
     hint = _resolve_hint(name, platform)
-    # Fresh machine → INSTALL, not upgrade. `winget upgrade` on a
-    # never-installed package fails with "no installed package found"
-    # (first bro-install field report, 2026-07-06).
+    # THE check: fresh machine → install, present → update. (`winget upgrade` on
+    # a never-installed package fails, so this decision is load-bearing.)
     cmd = hint["update_cmd"] if _bin_for(name).exists() else hint["install_cmd"]
+    return _run_commands([cmd], [name], platform)
 
+
+def _pending() -> list[tuple[str, str]]:
+    """(name, cmd) for each binary that needs action — install_cmd when
+    missing, update_cmd when found-but-outdated. Up-to-date and can't-tell
+    ('outdated' is None, e.g. the source is offline) are skipped."""
+    out: list[tuple[str, str]] = []
+    for name in ("ytdlp", "mpv", "ffmpeg"):
+        st = _status_for(name)
+        hint = st["install_hint"]
+        if not st["found"]:
+            out.append((name, hint["install_cmd"]))
+        elif st["outdated"] is True:
+            out.append((name, hint["update_cmd"]))
+    return out
+
+
+def run_update_all() -> dict[str, Any]:
+    """Check all three deps, then install/update ONLY what's missing or
+    outdated — in ONE elevated pass (a single UAC on Windows / one sudo
+    terminal on Linux). No-op when everything is already current."""
+    platform = _platform_key()
+    pend = _pending()
+    if not pend:
+        return {
+            "ok": True,
+            "kind": "noop",
+            "message": "All dependencies are installed and up to date.",
+        }
+    names = [n for n, _ in pend]
+    cmds = [c for _, c in pend]
+    return _run_commands(cmds, names, platform)
+
+
+def _run_commands(cmds: list[str], names: list[str], platform: str) -> dict[str, Any]:
+    """Dispatch one-or-more install/update commands to the platform runner.
+    Windows + Linux each launch ONE elevation surface (window / terminal) that
+    runs every command in turn, and return immediately (async)."""
     if platform == "windows":
-        result = _run_update_windows(cmd)
-        # Belt for the field case (second bro report, 2026-07-06): winget can
-        # still answer "no installed package found" — e.g. the binary exists
-        # but ISN'T winget-managed (PATH copy, portable exe), so the update
-        # path is chosen honestly yet winget has nothing to upgrade. Detect
-        # that class (DE + EN message forms) and fall through to a clean
-        # install once.
-        if cmd == hint["update_cmd"] and _looks_like_not_installed(result):
-            retry = _run_update_windows(hint["install_cmd"])
-            retry["message"] = (
-                "Update found no winget-managed install — ran a fresh install instead."
-            )
-            retry["first_attempt"] = {
-                "command": cmd,
-                "exit_code": result.get("exit_code"),
-            }
-            return retry
-        return result
+        return _spawn_elevated_windows(cmds, names)
     if platform == "linux":
-        return _run_update_linux(cmd)
-    # macOS + anything else falls through to copy-paste
+        return _run_terminal_linux(cmds, names)
     return {
         "ok": False,
         "kind": "copy",
-        "command": cmd,
+        "command": " && ".join(cmds),
         "message": (
-            f"Auto-update isn't wired for {platform} yet. "
-            f"Copy the command and run it in a terminal."
+            f"Auto-install isn't wired for {platform} yet. "
+            "Copy the command(s) and run them in a terminal."
         ),
     }
 
 
-# ─────────────────────────── Windows: UAC ─────────────────────────
+# ─────────────────────── Windows: elevated spawn ──────────────────
 
 
-def _looks_like_not_installed(result: dict[str, Any]) -> bool:
-    """winget's 'nothing to upgrade' class, DE + EN message forms."""
-    blob = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
-    return (
-        "kein installiertes paket" in blob
-        or "no installed package found" in blob
-    )
+def _spawn_elevated_windows(cmds: list[str], names: list[str]) -> dict[str, Any]:
+    """Launch ONE elevated, VISIBLE PowerShell that runs each command in turn,
+    shows its output, and pauses at the end — then return immediately (a single
+    UAC prompt for the whole batch).
 
+    ASYNC by design. The old path ran `subprocess.run(timeout=300)` and blocked
+    the request until UAC + winget finished; that routinely exceeded the 30s
+    satellite proxy timeout (music manifest) and surfaced to the browser as a
+    500 even though the install completed in the background. Returning right
+    after the spawn removes the 500, and the visible window is the honest status
+    surface (the user watches winget and sees any real error — e.g. a bad
+    package id — instead of a fabricated 'UAC maybe denied' message).
 
-def _run_update_windows(cmd: str) -> dict[str, Any]:
-    """Spawn the update command elevated via UAC. Synchronous —
-    the UAC click + winget run typically completes in 5–30 s for a
-    single package, so blocking the HTTP request is fine.
-
-    We elevate `powershell.exe` (a real .exe — always resolvable, unlike
-    the per-user `winget` App Execution Alias, which Start-Process can't
-    find as a bare -FilePath in the elevated context) and have THAT shell
-    run the update with its own `> / 2>` redirection to temp files. This
-    is what makes capture work: `Start-Process -Verb RunAs` and
-    `-RedirectStandardOutput/-RedirectStandardError` are mutually exclusive
-    in PowerShell (the old code combined them, so the update silently
-    failed before launching). The inner command goes over -EncodedCommand
-    to avoid nested-quoting breakage."""
-    parts = shlex.split(cmd, posix=False)
-    if not parts:
-        return {"ok": False, "kind": "copy", "command": cmd, "error": "empty command"}
-    program, *_args = parts
-
-    out_path: str | None = None
-    err_path: str | None = None
-    try:
-        out_fd, out_path = tempfile.mkstemp(prefix="jarvis-upd-", suffix=".out")
-        err_fd, err_path = tempfile.mkstemp(prefix="jarvis-upd-", suffix=".err")
-        os.close(out_fd)
-        os.close(err_fd)
-
-        # winget needs to be told NOT to prompt — in a hidden elevated
-        # window an interactive agreement/selection prompt would hang
-        # until the 5-min timeout.
-        full = cmd
-        if program.lower().startswith("winget"):
+    We elevate `powershell.exe` (a real .exe — always resolvable, unlike the
+    per-user `winget` App Execution Alias) and hand it the script over
+    -EncodedCommand to dodge nested-quoting breakage."""
+    label = ", ".join(names) if names else "dependencies"
+    lines = [
+        "$ErrorActionPreference = 'Continue'",
+        f"Write-Host '=== JarvYZ dependency install: {label} ==='",
+    ]
+    for c in cmds:
+        full = c
+        is_winget = c.strip().lower().startswith("winget")
+        # winget must NOT prompt (agreements / interactive picker) — it would
+        # hang the window waiting for input.
+        if is_winget:
             full += (
                 " --accept-source-agreements --accept-package-agreements"
                 " --disable-interactivity"
             )
-        # Inner script the ELEVATED shell runs: do the update, redirect all
-        # output to our temp files, and surface the real tool exit code.
-        inner = f"{full} > '{out_path}' 2> '{err_path}'; exit $LASTEXITCODE"
-        enc = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
-        ps_script = (
-            "$p = Start-Process -FilePath 'powershell.exe' "
-            f"-ArgumentList '-NoProfile','-EncodedCommand','{enc}' "
-            "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
-            "exit $p.ExitCode"
-        )
-
-        try:
-            proc = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", ps_script],
-                capture_output=True,
-                text=True,
-                timeout=300.0,
-            )
-        except subprocess.TimeoutExpired:
-            return {
-                "ok": False,
-                "kind": "sync",
-                "command": cmd,
-                "error": "update timed out after 5 min — copy the command and run it in a terminal",
-            }
-
-        # UAC denied → PowerShell exits with non-zero + a specific error
-        # in stderr. Most other failure modes also surface via ps stderr.
-        stdout = _read_capped(out_path, 4000)
-        stderr = _read_capped(err_path, 4000)
-        if proc.returncode != 0 and not stdout and not stderr:
-            # Likely UAC denied or Start-Process threw before launching
-            stderr = (proc.stderr or "").strip() or "PowerShell returned non-zero (possibly UAC denied)"
-
-        return {
-            "ok": proc.returncode == 0,
-            "kind": "sync",
-            "command": cmd,
-            "exit_code": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-            "message": (
-                "Update completed."
-                if proc.returncode == 0
-                else "Update failed — see output below (the UAC prompt may have been denied)."
-            ),
-        }
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"ok": False, "kind": "sync", "command": cmd, "error": str(e)}
-    finally:
-        for p in (out_path, err_path):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
-
-def _read_capped(path: str, cap: int) -> str:
-    """Read up to `cap` bytes from the end of `path`. Empty on missing."""
+        lines += ["Write-Host ''", f"Write-Host '> {c}'", full]
+        # `winget upgrade` fails when the binary is present but NOT
+        # winget-managed (a portable exe / PATH copy) — the exact class the old
+        # sync path retried. Bake the fallback into the elevated script so it
+        # self-heals with no output parsing: on nonzero, run the install form.
+        if is_winget and " upgrade " in f" {c.strip().lower()} ":
+            install_variant = full.replace(" upgrade ", " install ", 1)
+            lines += [
+                "if ($LASTEXITCODE -ne 0) {",
+                "  Write-Host '  upgrade found nothing to update; trying install...'",
+                f"  {install_variant}",
+                "}",
+            ]
+        lines.append('Write-Host "  (exit $LASTEXITCODE)"')
+    lines += [
+        "Write-Host ''",
+        "Write-Host 'Done. Press Enter to close this window...'",
+        "Read-Host",
+    ]
+    inner = "\n".join(lines)
+    enc = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
+    # Outer (non-elevated) shell launches the elevated VISIBLE window and exits
+    # immediately — no -Wait, so this call returns fast (one UAC prompt).
+    ps_script = (
+        "Start-Process -FilePath 'powershell.exe' "
+        f"-ArgumentList '-NoProfile','-EncodedCommand','{enc}' -Verb RunAs"
+    )
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            data = f.read()
-    except OSError:
-        return ""
-    return data[-cap:]
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return {
+            "ok": False,
+            "kind": "copy",
+            "command": " ; ".join(cmds),
+            "error": str(e),
+            "message": "Could not launch the elevated installer — copy the command(s) and run them in a terminal.",
+        }
+    return {
+        "ok": True,
+        "kind": "async",
+        "command": " ; ".join(cmds),
+        "spawned_terminal": "an elevated PowerShell window",
+        "message": (
+            "Launched in an elevated window — approve the UAC prompt. It shows "
+            "install progress and stays open when done; click Re-check to refresh."
+        ),
+    }
 
 
 # ─────────────────────────── Linux / WSL: terminal ────────────────
@@ -772,46 +737,40 @@ _LINUX_TERMINALS: list[tuple[str, Any]] = [
 ]
 
 
-def _run_update_linux(cmd: str) -> dict[str, Any]:
-    """Spawn a terminal window running `sudo <cmd>`. The terminal is
-    the elevation surface — sudo prompts there for the user's password.
-    Asynchronous; we don't wait. The UI will tell the user to check
-    the terminal window + click Re-check when done.
+def _run_terminal_linux(cmds: list[str], names: list[str]) -> dict[str, Any]:
+    """Spawn ONE terminal window that runs each command in turn. The terminal
+    is the elevation surface — each hint carries its own sudo (apt needs it;
+    uv tool / brew don't), prompting inside the window. Asynchronous; we don't
+    wait. The UI tells the user to watch the window + click Re-check.
 
     Falls through to copy-paste on:
       - No DISPLAY (headless Linux server)
       - No supported terminal binary on PATH
       - Spawn-time exception"""
+    joined = " && ".join(cmds)
     if not os.environ.get("DISPLAY"):
         return {
             "ok": False,
             "kind": "copy",
-            "command": cmd,
+            "command": joined,
             "message": (
                 "No DISPLAY available (looks like a headless box). "
-                "Copy the command and run it in a terminal."
+                "Copy the command(s) and run them in a terminal."
             ),
         }
 
-    # Wrap so the terminal:
-    #   1. Shows what's about to run
-    #   2. Runs the command verbatim — each hint declares its own sudo
-    #      (apt commands need it; uv tool / brew don't). Sudo prompts
-    #      inside this terminal if the command starts with it.
-    #   3. Reports the exit code
-    #   4. Waits for Enter so the user can read output before window closes
-    wrapped = (
-        f"echo '════════════════════════════════════════════════════════════'; "
-        f"echo '   JarvYZ update — {cmd}'; "
-        f"echo '════════════════════════════════════════════════════════════'; "
-        f"echo; "
-        f"{cmd}; "
-        f"status=$?; "
-        f"echo; "
-        f"echo \"Exit code: $status\"; "
-        f"echo 'Press Enter to close this window…'; "
-        f"read"
-    )
+    label = ", ".join(names) if names else "dependencies"
+    # Wrap so the terminal shows each command, runs it, reports its exit code,
+    # then waits for Enter so the user can read output before the window closes.
+    body = [
+        "echo '════════════════════════════════════════════════════════════'",
+        f"echo '   JarvYZ dependency install: {label}'",
+        "echo '════════════════════════════════════════════════════════════'",
+    ]
+    for c in cmds:
+        body += ["echo", f"echo '> {c}'", c, 'echo "  (exit $?)"']
+    body += ["echo", "echo 'Press Enter to close this window…'", "read"]
+    wrapped = "; ".join(body)
 
     for binary, build_argv in _LINUX_TERMINALS:
         if not shutil.which(binary):
@@ -826,28 +785,27 @@ def _run_update_linux(cmd: str) -> dict[str, Any]:
                 # into the detached terminal — would leak the port.
                 close_fds=True,
             )
-        except (OSError, subprocess.SubprocessError) as e:
+        except (OSError, subprocess.SubprocessError):
             # Try the next candidate
             continue
         return {
             "ok": True,
             "kind": "async",
-            "command": cmd,
+            "command": joined,
             "spawned_terminal": binary,
             "message": (
-                f"Update launched in a new {binary} window. "
-                f"Type your sudo password there; the command output stays in that "
-                f"window. Click 'Re-check' when you're done to refresh the version."
+                f"Launched in a new {binary} window. Type your sudo password "
+                "there; the output stays in that window. Click Re-check when done."
             ),
         }
 
     return {
         "ok": False,
         "kind": "copy",
-        "command": cmd,
+        "command": joined,
         "message": (
             "No supported terminal emulator found "
             f"(tried: {', '.join(t[0] for t in _LINUX_TERMINALS)}). "
-            "Copy the command and run it in a terminal."
+            "Copy the command(s) and run them in a terminal."
         ),
     }
