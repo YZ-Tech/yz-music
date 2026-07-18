@@ -40,7 +40,7 @@ export function AudioDelaySlider() {
       }}
     >
       <Tooltip
-        title="Audio-delay compensation. Positive ms shifts audio earlier to line up with downstream speaker / Bluetooth latency. Same as the voice command 'audio delay 400'. 0 = off. Persisted; live-applies to a playing track."
+        title="Audio-delay compensation. Positive ms shifts audio EARLIER (compensates downstream speaker / Bluetooth latency); negative shifts it LATER (when the video path lags the audio). Same as the voice command 'audio delay 400'. 0 = off. Persisted; live-applies to a playing track. The backend accepts up to ±3000 via voice."
         arrow
       >
         <Typography variant="body2" sx={{ fontWeight: 500, minWidth: 110 }}>
@@ -50,10 +50,16 @@ export function AudioDelaySlider() {
       <Slider
         size="small"
         value={local}
-        min={0}
+        min={-1000}
         max={1000}
         step={10}
-        marks={[{ value: 0, label: '0' }, { value: 500, label: '500' }, { value: 1000, label: '1000' }]}
+        marks={[
+          { value: -1000, label: '-1000' },
+          { value: -500, label: '-500' },
+          { value: 0, label: '0' },
+          { value: 500, label: '500' },
+          { value: 1000, label: '1000' },
+        ]}
         valueLabelDisplay="auto"
         valueLabelFormat={(v) => `${v} ms`}
         onChange={(_e, v) => setLocal(Array.isArray(v) ? v[0] : v)}

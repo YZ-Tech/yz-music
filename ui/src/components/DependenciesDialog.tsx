@@ -33,6 +33,10 @@ import {
   type DependencyInfo,
   type DependencyUpdateResult,
 } from '../lib/api'
+import { useMusicStore as useStore } from '../lib/store-context'
+import { AudioDelaySlider } from './AudioDelaySlider'
+import { AudioOnlyToggle } from './AudioOnlyToggle'
+import { LibraryPathEditor } from './LibraryPathEditor'
 
 
 interface Props {
@@ -52,6 +56,7 @@ interface Props {
  *  in the page header is the always-visible affordance + badge. */
 export function DependenciesDialog({ open, onClose, status, loading, error, refresh }: Props) {
   const api = useApi()
+  const libraryPath = useStore((s) => s.music.libraryPath)
   const [allBusy, setAllBusy] = useState(false)
   const [allResult, setAllResult] = useState<DependencyUpdateResult | null>(null)
 
@@ -90,7 +95,7 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1 }}>
         <Typography variant="h6" sx={{ flex: 1 }}>
-          External binaries
+          Music setup
         </Typography>
         <Tooltip title="Re-check">
           <IconButton size="small" onClick={() => void refresh()} disabled={loading}>
@@ -105,6 +110,9 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
       <Divider />
 
       <DialogContent sx={{ pt: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          External binaries
+        </Typography>
         {allResult && (
           <Alert
             severity={
@@ -165,6 +173,18 @@ export function DependenciesDialog({ open, onClose, status, loading, error, refr
             </Stack>
           </>
         )}
+
+        {/* Library + playback settings — moved here from the library card's
+            tail (2026-07-10): three orphaned rows glued under the table,
+            while settings already had a second home behind this gear. The
+            rows keep their own borderTop separators. `key` remounts the
+            path editor when the saved path changes (resets its draft). */}
+        <Typography variant="subtitle2" sx={{ mt: 3 }}>
+          Library &amp; playback
+        </Typography>
+        <LibraryPathEditor key={libraryPath} path={libraryPath} />
+        <AudioOnlyToggle />
+        <AudioDelaySlider />
       </DialogContent>
 
       <DialogActions sx={{ justifyContent: 'space-between' }}>

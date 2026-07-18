@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Badge, Box, IconButton, Stack, Tooltip, Typography } from '@mui/material'
+import { Alert, Badge, Box, IconButton, Tooltip } from '@mui/material'
 import { ThemeProvider, type Theme } from '@mui/material/styles'
 import SettingsIcon from '@mui/icons-material/Settings'
 import { ApiContext, type MusicApi } from './lib/api'
@@ -85,39 +85,35 @@ function MusicPageInner() {
     if (needsAttention) setDepsOpen(true)
   }, [deps.status, needsAttention])
 
+  // No standalone "Music" title (2026-07-10 restyle — it repeated the nav
+  // entry): the search row IS the header; now-playing + the setup gear ride
+  // its right side via the `actions` slot.
   return (
     <Box>
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        spacing={2}
-        sx={{ mb: 2, alignItems: { xs: 'stretch', md: 'center' } }}
-      >
-        <Typography variant="h4" sx={{ flex: 1 }}>
-          Music
-        </Typography>
-        <NowPlayingCard />
-        <Tooltip
-          title={
-            needsAttention
-              ? 'yt-dlp / mpv need attention — open setup'
-              : 'External binaries (yt-dlp, mpv)'
-          }
-        >
-          <IconButton size="small" onClick={() => setDepsOpen(true)}>
-            <Badge variant="dot" color="warning" invisible={!needsAttention}>
-              <SettingsIcon fontSize="small" />
-            </Badge>
-          </IconButton>
-        </Tooltip>
-      </Stack>
-
       <DownloadsCard />
 
       {error && (
         <ErrorAlert error={error} onDismiss={() => setError(null)} sx={{ mb: 2 }} />
       )}
 
-      <LibraryCard />
+      <LibraryCard
+        leading={<NowPlayingCard />}
+        actions={
+          <Tooltip
+            title={
+              needsAttention
+                ? 'yt-dlp / mpv need attention — open setup'
+                : 'Music setup — binaries, library path, playback'
+            }
+          >
+            <IconButton size="small" onClick={() => setDepsOpen(true)}>
+              <Badge variant="dot" color="warning" invisible={!needsAttention}>
+                <SettingsIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+        }
+      />
 
       <DependenciesDialog
         open={depsOpen}

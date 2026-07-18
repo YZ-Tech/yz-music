@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   Box,
   Button,
@@ -27,12 +27,25 @@ interface Props {
   onSourceChange: (s: Source) => void
   query: string
   onQueryChange: (q: string) => void
+  /** Right-hand extras for the row (the setup gear) — the search row IS
+   *  the page header since the standalone h4 title died (2026-07-10). */
+  actions?: ReactNode
+  /** Sibling card rendered LEFT of the search card (the now-playing
+   *  player). Row on md+, stacks on xs; the search card takes the rest. */
+  leading?: ReactNode
 }
 
 /** Search row (toggle + input + button) and — when in YouTube mode — the
  *  results panel below it. Library filter is local UI state; YouTube
  *  results are local too because they're scoped to this card. */
-export function LibrarySearch({ source, onSourceChange, query, onQueryChange }: Props) {
+export function LibrarySearch({
+  source,
+  onSourceChange,
+  query,
+  onQueryChange,
+  actions,
+  leading,
+}: Props) {
   const setError = useStore((s) => s.setMusicError)
   const mediaPlay = useStore((s) => s.mediaPlay)
   const api = useApi()
@@ -70,9 +83,18 @@ export function LibrarySearch({ source, onSourceChange, query, onQueryChange }: 
 
   return (
     <>
-      <Card variant="outlined" sx={{ mb: 3 }}>
-        <CardContent>
-          <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={2}
+        sx={{ mb: 3, alignItems: 'stretch' }}
+      >
+        {leading}
+        <Card
+          variant="outlined"
+          sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}
+        >
+          <CardContent sx={{ flex: 1 }}>
+            <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
             <ToggleButtonGroup
               size="small"
               exclusive
@@ -110,9 +132,11 @@ export function LibrarySearch({ source, onSourceChange, query, onQueryChange }: 
                 {searching ? 'Searching…' : 'Search'}
               </Button>
             )}
-          </Stack>
-        </CardContent>
-      </Card>
+              {actions}
+            </Stack>
+          </CardContent>
+        </Card>
+      </Stack>
 
       {source === 'youtube' && searchResults.length > 0 && (
         <Card variant="outlined" sx={{ mb: 3 }}>

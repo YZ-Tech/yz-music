@@ -33,8 +33,10 @@ export function NowPlayingCard() {
 
   if (idle || !path) return null
 
+  // Sized for its seat LEFT of the search card (2026-07-10): takes up to
+  // ~440px, yields the rest of the row to search; stacks under it on xs.
   return (
-    <Card variant="outlined" sx={{ flex: 1, minWidth: 0, maxWidth: 875 }}>
+    <Card variant="outlined" sx={{ flex: '0 1 440px', minWidth: 320 }}>
       <CardContent sx={{ pb: '12px !important' }}>
         {/* Row 1: thumbnail + title + transport controls (far right) */}
         <Stack direction="row" sx={{ alignItems: 'center', gap: 1.5 }}>

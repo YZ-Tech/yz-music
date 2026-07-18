@@ -32,7 +32,10 @@ export function AudioOnlyToggle() {
         flexWrap: 'wrap',
       }}
     >
-      <Tooltip title="When on, mpv runs with --no-video. Audio only — no mpv window. Useful when you're listening, not watching. Default is on for Linux/WSL, off for Windows." arrow>
+      <Tooltip
+        title="When on, mpv runs with --no-video. Audio only — no mpv window. Useful when you're listening, not watching. Default is on for Linux/WSL, off for Windows. Applied on the next mpv launch."
+        arrow
+      >
         <FormControlLabel
           control={<Switch size="small" checked={audioOnly} onChange={handleChange} />}
           label={
@@ -42,9 +45,6 @@ export function AudioOnlyToggle() {
           }
         />
       </Tooltip>
-      <Typography variant="caption" color="text.secondary">
-        applied on next mpv launch
-      </Typography>
     </Box>
   )
 }

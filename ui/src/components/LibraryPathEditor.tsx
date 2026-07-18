@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Box, Button, TextField, Typography } from '@mui/material'
+import { Box, Button, TextField, Tooltip, Typography } from '@mui/material'
 import { useMusicStore as useStore } from '../lib/store-context'
 
 interface Props {
@@ -50,17 +50,19 @@ export function LibraryPathEditor({ path }: Props) {
         placeholder={path || 'D:\\Media\\YouTube'}
         sx={{ flex: 1, minWidth: 240, maxWidth: 480 }}
       />
-      <Button
-        size="small"
-        variant="outlined"
-        disabled={!draft.trim() || draft.trim() === path}
-        onClick={handleSave}
-      >
-        Save
-      </Button>
-      <Typography variant="caption" color="text.secondary">
-        yt-play picks up on next spawn — no JarvYZ restart
-      </Typography>
+      <Tooltip title="yt-play picks up the new path on its next spawn — no JarvYZ restart needed" arrow>
+        {/* span: Tooltip needs a hoverable child even while the Button is disabled */}
+        <span>
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={!draft.trim() || draft.trim() === path}
+            onClick={handleSave}
+          >
+            Save
+          </Button>
+        </span>
+      </Tooltip>
     </Box>
   )
 }

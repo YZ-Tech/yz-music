@@ -108,6 +108,17 @@ export function LibraryBrowser({ source, query }: Props) {
     ids: new Set(),
   })
   const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>({})
+  // Length is hidden for the LOCAL library — the scan never populates
+  // duration_seconds (needs ffprobe per file; satellite server.py marks it
+  // future work), so it rendered as a 100%-empty column (2026-07-10).
+  // YouTube results DO carry durations, so the column returns there.
+  const effectiveColumnVisibility = useMemo<GridColumnVisibilityModel>(
+    () =>
+      source === 'local'
+        ? { ...columnVisibility, duration_seconds: false }
+        : columnVisibility,
+    [columnVisibility, source],
+  )
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busyBulk, setBusyBulk] = useState(false)
   const [columnsMenuAnchor, setColumnsMenuAnchor] = useState<HTMLElement | null>(null)
@@ -368,7 +379,7 @@ export function LibraryBrowser({ source, query }: Props) {
         open={Boolean(columnsMenuAnchor)}
         onClose={() => setColumnsMenuAnchor(null)}
       >
-        {ALL_COLUMNS.map((field) => {
+        {ALL_COLUMNS.filter((f) => source !== 'local' || f !== 'duration_seconds').map((field) => {
           const visible = columnVisibility[field] !== false
           return (
             <MenuItem
@@ -486,7 +497,7 @@ export function LibraryBrowser({ source, query }: Props) {
             density="compact"
             rowSelectionModel={selection}
             onRowSelectionModelChange={setSelection}
-            columnVisibilityModel={columnVisibility}
+            columnVisibilityModel={effectiveColumnVisibility}
             onColumnVisibilityModelChange={setColumnVisibility}
             initialState={{
               sorting: { sortModel: [{ field: 'mtime', sort: 'desc' }] },

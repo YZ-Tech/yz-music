@@ -1,7 +1,7 @@
 {
   "id": "music",
   "name": "Music",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "enabled": true,
   "nav": {
     "label": "Music",

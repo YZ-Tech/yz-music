@@ -1,27 +1,29 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Card } from '@mui/material'
-import { useMusicStore as useStore } from '../lib/store-context'
-import { AudioDelaySlider } from './AudioDelaySlider'
-import { AudioOnlyToggle } from './AudioOnlyToggle'
 import { LibraryBrowser } from './LibraryBrowser'
 import { LibraryFallbackStrip } from './LibraryFallbackStrip'
-import { LibraryPathEditor } from './LibraryPathEditor'
 import { LibrarySearch } from './LibrarySearch'
 import type { Source } from '../types'
 
 /** Library card — orchestrator. Holds two pieces of local UI state
  *  (source toggle + search query) that both LibrarySearch and
  *  LibraryBrowser need to read. Everything else (selection, view,
- *  fallback, library, library_path) is either local to a child or
- *  pulled from the store directly.
+ *  fallback, library) is either local to a child or pulled from the
+ *  store directly.
  *
- *  We read `libraryPath` here only to use it as the React `key` for
- *  LibraryPathEditor — that remounts the editor whenever the saved
- *  path changes, resetting its local draft without a sync-effect. */
-export function LibraryCard() {
+ *  The library-path / audio-only / lipsync-delay settings rows moved to
+ *  the Music setup dialog (2026-07-10): they were orphaned chrome glued
+ *  under the table, and settings already had a second home behind the
+ *  gear — now there's one. */
+export function LibraryCard({
+  actions,
+  leading,
+}: {
+  actions?: ReactNode
+  leading?: ReactNode
+}) {
   const [source, setSource] = useState<Source>('local')
   const [query, setQuery] = useState('')
-  const libraryPath = useStore((s) => s.music.libraryPath)
 
   return (
     <>
@@ -30,13 +32,12 @@ export function LibraryCard() {
         onSourceChange={setSource}
         query={query}
         onQueryChange={setQuery}
+        actions={actions}
+        leading={leading}
       />
 
       <Card variant="outlined">
         <LibraryBrowser source={source} query={query} />
-        <LibraryPathEditor key={libraryPath} path={libraryPath} />
-        <AudioOnlyToggle />
-        <AudioDelaySlider />
         <LibraryFallbackStrip />
       </Card>
     </>
