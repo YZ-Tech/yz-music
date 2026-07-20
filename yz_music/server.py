@@ -868,7 +868,9 @@ def tool_mpv_control(body: _ControlBody) -> dict:
 # ───────────────────────── entry point ────────────────────────────
 
 
-_PORT = int(os.environ.get("MUSIC_PORT", "9002"))
+# YZ_PORT = the port core resolved (settings.ports override) — wins so the
+# bind always matches the client URL; MUSIC_PORT + default serve standalone runs.
+_PORT = int(os.environ.get("YZ_PORT") or os.environ.get("MUSIC_PORT") or "9002")
 
 
 def run() -> None:
