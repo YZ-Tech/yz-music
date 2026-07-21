@@ -22,6 +22,8 @@ Phase 4 (JarvYZ-side adapter) adds the /api/media/* proxy in JarvYZ.
 Phase 5 mounts ./static at / for the standalone SPA."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import asyncio
 import hashlib
 import os
@@ -44,23 +46,23 @@ from .cli import ipc_send, IPC_NO_MPV, IPC_SENT, MODE_TO_MPV, _yt_dlp_bin
 from .observer import observer
 
 
-app = FastAPI(title="music", version=__version__)
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # was three @app.on_event hooks — deprecated in favor of lifespan.
+    # Loop stash FIRST so observer-thread emits can always marshal back.
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+    # Wire WS broadcast into the observer + start the observer thread.
+    # The observer reconnects to mpv on its own; nothing else to do.
+    observer.subscribe(_emit)
+    observer.start()
+    yield
+    observer.stop()
+
+app = FastAPI(title="music", version=__version__, lifespan=_lifespan)
 
 
 # ─────────────────────────── lifecycle ────────────────────────────
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    """Wire WS broadcast into the observer + start the observer thread.
-    The observer reconnects to mpv on its own; nothing else to do."""
-    observer.subscribe(_emit)
-    observer.start()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    observer.stop()
 
 
 # ──────────────────────── WS broadcast plumbing ────────────────────
@@ -94,13 +96,6 @@ def _emit(event: str, payload: dict[str, Any]) -> None:
 
 
 _main_loop: asyncio.AbstractEventLoop | None = None
-
-
-@app.on_event("startup")
-async def _capture_loop() -> None:
-    """Stash the main asyncio loop so observer-thread emits can find it."""
-    global _main_loop
-    _main_loop = asyncio.get_running_loop()
 
 
 @app.websocket("/events")
